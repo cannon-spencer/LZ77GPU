@@ -1,0 +1,5 @@
+*.slurm
+*.txt
+yeast.fasta
+*.swp
+cmake-build-debug
