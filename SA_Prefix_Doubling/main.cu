@@ -54,7 +54,7 @@ private:
     void monitor() {
         while (!stop_monitoring.load()) {
             update_peak_usage();
-            std::this_thread::sleep_for(std::chrono::milliseconds(5)); // Adjust interval as needed
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -180,6 +180,8 @@ void assign_ranks_kernel(const SuffixKey* d_keys, const int* d_new_group_ids, in
 std::vector<size_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& s){
     size_t n = s.size();
 
+    auto mem_start = std::chrono::high_resolution_clock::now();
+
     // Store rank array in a device vector
     thrust::device_vector<int> d_rank(s.begin(), s.end());
 
@@ -189,34 +191,85 @@ std::vector<size_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t
     // Arrays for calculating new ranks
     thrust::device_vector<int> d_diff(n), d_new_group_ids(n), d_newRank(n);
 
+    //cudaStream_t stream;
+    //CHECK_CUDA_ERROR(cudaStreamCreate(&stream));
+
+    /*int* d_rank;
+    SuffixKey* d_keys;
+    int* d_diff, *d_new_group_ids, *d_newRank;
+
+    cudaMalloc(&d_rank, n * sizeof(int));
+    cudaMalloc(&d_keys, n * sizeof(SuffixKey));
+    cudaMalloc(&d_diff, n * sizeof(int));
+    cudaMalloc(&d_new_group_ids, n * sizeof(int));
+    cudaMalloc(&d_newRank, n * sizeof(int));
+    cudaMemcpy(d_rank, s.data(), n * sizeof(int), cudaMemcpyHostToDevice); */
+
+    auto mem_stop = std::chrono::high_resolution_clock::now();
+    std::cout << "Memory Allocation Time: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(mem_stop - mem_start).count()
+              << " ms\n";
+
+
     // CUDA configuration
-    //int blockSize = 256;
-    int blockSize = 1024; // testing
+    int blockSize = 1024;
     int gridSize = static_cast<int>((n + blockSize - 1) / blockSize);
 
     // Prefix doubling loop
     for (size_t k = 1; k < n; k *= 2) {
+        std::cout << "Prefix Doubling -- Iteration: K = " << k << std::endl;
+        auto start = std::chrono::high_resolution_clock::now();
+
         // Build the (r1, r2, idx) keys
         build_keys_kernel<<<gridSize, blockSize>>>(thrust::raw_pointer_cast(d_rank.data()),
-                thrust::raw_pointer_cast(d_keys.data()), n, k);
+                                                   thrust::raw_pointer_cast(d_keys.data()), n, k);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+        auto stop = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
+        std::cout << "Build Keys Time: " << duration << " ms\t";
+
+        start = std::chrono::high_resolution_clock::now();
+
         // Sort the suffix keys by (r1, r2)
-        thrust::sort(d_keys.begin(), d_keys.end());
+        thrust::sort(thrust::device, d_keys.begin(), d_keys.end());
+
+        stop = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
+        std::cout << "Sort Keys Time: " << duration << " ms\t";
+
+        start = std::chrono::high_resolution_clock::now();
 
         // Compute differences to identify group boundaries
         compute_diff_kernel<<<gridSize, blockSize>>>(thrust::raw_pointer_cast(d_keys.data()),
-                thrust::raw_pointer_cast(d_diff.data()), n);
+                                                     thrust::raw_pointer_cast(d_diff.data()), n);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        // Inclusive scan to compute new group IDs
+        stop = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
+        std::cout << "Compute Diff Kernal Time: " << duration << " ms\t";
+
+        start = std::chrono::high_resolution_clock::now();
+
+        // Inclusive scan using device pointers
         thrust::inclusive_scan(d_diff.begin(), d_diff.end(), d_new_group_ids.begin());
+
+
+        stop = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
+        std::cout << "Inclusive Scan for Group IDs: " << duration << " ms\t";
+
+        start = std::chrono::high_resolution_clock::now();
 
         // Assign new ranks based on group IDs
         assign_ranks_kernel<<<gridSize, blockSize>>>(thrust::raw_pointer_cast(d_keys.data()),
-                thrust::raw_pointer_cast(d_new_group_ids.data()),
-                thrust::raw_pointer_cast(d_newRank.data()), n);
+                                                     thrust::raw_pointer_cast(d_new_group_ids.data()),
+                                                     thrust::raw_pointer_cast(d_newRank.data()), n);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+        stop = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
+        std::cout << "Assign Ranks Kernal: " << duration << " ms\t";
 
         // Get the maximum rank
         int max_rank = d_new_group_ids[n - 1];
@@ -227,18 +280,53 @@ std::vector<size_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t
         }
 
         // Update ranks for next iteration
+        //thrust::copy(d_newRank.begin(), d_newRank.end(), d_rank.begin());
+
+        auto copy_start = std::chrono::high_resolution_clock::now();
         thrust::copy(d_newRank.begin(), d_newRank.end(), d_rank.begin());
+        //CHECK_CUDA_ERROR(cudaMemcpy(d_rank, d_newRank, n * sizeof(int), cudaMemcpyDeviceToDevice));
+        //int* temp = d_rank;
+        //d_rank = d_newRank;
+        //d_newRank = temp;
+        auto copy_stop = std::chrono::high_resolution_clock::now();
+        std::cout << "Copy New Rank Time: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(copy_stop - copy_start).count()
+                  << " ms\n";
 
     }
+
+    auto transfer_start = std::chrono::high_resolution_clock::now();
 
     // Get the final suffix array from the sorted keys
     std::vector<SuffixKey> hostKeys(n);
     thrust::copy(d_keys.begin(), d_keys.end(), hostKeys.begin());
+    //CHECK_CUDA_ERROR(cudaMemcpy(hostKeys.data(), d_keys, n * sizeof(SuffixKey), cudaMemcpyDeviceToHost));
 
+    auto transfer_stop = std::chrono::high_resolution_clock::now();
+    std::cout << "Copy entire suffixkey host: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(transfer_stop - transfer_start).count()
+              << " ms\n";
+
+    auto get_sa_start = std::chrono::high_resolution_clock::now();
     std::vector<size_t> sa(n);
     for (size_t i = 0; i < n; i++) {
         sa[i] = hostKeys[i].idx;
     }
+
+    auto get_sa_stop = std::chrono::high_resolution_clock::now();
+    std::cout << "Extract SA from SuffixKeys: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(get_sa_stop - get_sa_start).count()
+              << " ms\n";
+
+    // Free Memory
+//    cudaFree(d_rank);
+//    cudaFree(d_keys);
+//    cudaFree(d_diff);
+//    cudaFree(d_new_group_ids);
+//    cudaFree(d_newRank);
+
+    // Destroy CUDA stream
+    //CHECK_CUDA_ERROR(cudaStreamDestroy(stream));
 
     return sa;
 }
@@ -274,14 +362,7 @@ int main(int argc, char** argv){
      * PREFIX DOUBLING
      **/
 
-    /// TESTING
-    int minGridSize, optBlockSize;
-    cudaOccupancyMaxPotentialBlockSize(&minGridSize, &optBlockSize, build_keys_kernel);
-    std::cout << "Optimal Block Size build_keys_kernel: " << optBlockSize << std::endl;
-    cudaOccupancyMaxPotentialBlockSize(&minGridSize, &optBlockSize, compute_diff_kernel);
-    std::cout << "Optimal Block Size compute_diff_kernel: " << compute_diff_kernel << std::endl;
-    cudaOccupancyMaxPotentialBlockSize(&minGridSize, &optBlockSize, assign_ranks_kernel);
-    std::cout << "Optimal Block Size assign_ranks_kernel: " << optBlockSize << std::endl;
+    std::cout << "t" << std::endl;
 
     // init tracker for prefix doubling
     MemoryMonitor prefix_monitor;
@@ -297,19 +378,22 @@ int main(int argc, char** argv){
 
     // show peak usage in MB for prefix doubling
     std::cout << "Peak GPU memory (prefix doubling): " << prefix_monitor.get_peak_usage_mb() << " MB\n\n";
-    
-    // Call destructor on memory monitor thread
-    prefix_monitor.~MemoryMonitor();
 
 
     /**
     * LIBCUBWT TESTING
     **/
 
+    // Re-init tracker for libcubwt phase
+    MemoryMonitor cubwt_monitor;
+
+    cubwt_monitor.start();
+    auto cubwt_start = std::chrono::high_resolution_clock::now();
 
     // init SA
     std::vector<uint32_t> SA_cubwt(n);
 
+    // Allocate Memory for libcubwt
     void* device_storage = nullptr;
     int64_t err = libcubwt_allocate_device_storage(&device_storage, n);
     if (err != LIBCUBWT_NO_ERROR) {
@@ -317,11 +401,7 @@ int main(int argc, char** argv){
         return 1;
     }
 
-    // Re-init tracker for libcubwt phase
-    MemoryMonitor cubwt_monitor;
-
-    cubwt_monitor.start();
-    auto cubwt_start = std::chrono::high_resolution_clock::now();
+    // Compute Suffix Array
     err = libcubwt_sa(device_storage, reinterpret_cast<const uint8_t*>(s.data()), SA_cubwt.data(), n);
     auto cubwt_stop = std::chrono::high_resolution_clock::now();
     cubwt_monitor.stop();
@@ -340,8 +420,6 @@ int main(int argc, char** argv){
     // final peak usage for libcubwt
     std::cout << "Peak GPU memory (libcubwt): " << cubwt_monitor.get_peak_usage_mb() << " MB\n\n";
 
-    // Call destructor on memory monitor thread
-    cubwt_monitor.~MemoryMonitor();
 
     /**
      *  FINAL COMPARISON
