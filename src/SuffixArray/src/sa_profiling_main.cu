@@ -3,6 +3,9 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
+#include <ctime>
+#include <cstdlib>
+#include <iomanip>
 
 #include "cuda_utils.cuh"
 #include "memory_monitor.cuh"
@@ -21,6 +24,26 @@ void print_profiling_summary() {
     std::cout << "Deallocation time:        " << g_cleanup_time_ns / 1e6 << " ms\n";
     std::cout << "===========================\n";
 }
+
+
+// Optionally print suffix array output for debugging
+template <typename SA_t>
+void dump_sa(const std::vector<SA_t>& sa,
+             const char* tag,
+             size_t max_lines = SIZE_MAX)    // PASS n to print all
+{
+    std::cout << "\n--- " << tag << " (size=" << sa.size() << ") ---\n";
+    size_t shown = 0;
+    for (size_t i = 0; i < sa.size(); ++i) {
+        if (shown++ == max_lines) {          // stop after max_lines
+            std::cout << "  ... (truncated)\n";
+            break;
+        }
+        std::cout << std::setw(6) << i << ": " << sa[i] << '\n';
+    }
+    std::cout.flush();
+}
+
 
 // Compare two SAs
 template <typename T, typename U>
@@ -66,7 +89,6 @@ int main(int argc, char** argv){
     * LIBCUBWT TESTING
     **/
 
-
     // Re-init tracker for libcubwt phase
     MemoryMonitor cubwt_monitor;
 
@@ -104,11 +126,9 @@ int main(int argc, char** argv){
     // final peak usage for libcubwt
     std::cout << "Peak GPU memory (libcubwt): " << cubwt_monitor.get_peak_usage_mb() << " MB\n\n";
 
-
     /**
      * PREFIX DOUBLING
      **/
-
 
     // init tracker for prefix doubling
     MemoryMonitor prefix_monitor;
@@ -167,6 +187,10 @@ int main(int argc, char** argv){
         std::cout << "SUCCESS: Both suffix arrays match!\n";
     } else {
         std::cout << "ERROR: The suffix arrays do NOT match.\n";
+
+        // debug print the arrays
+        dump_sa(SA_pd,    "Prefix-doubling SA", SA_pd.size());
+        dump_sa(SA_cubwt, "libcubwt SA",        SA_cubwt.size());
     }
 
     return 0;

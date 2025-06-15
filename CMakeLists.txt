@@ -1,15 +1,15 @@
 ###############################################################################
-#  Top-level CMake for LZ77GPU  – original file + *only* the cubwt fixes
+#  Top-level CMake for LZ77GPU
 ###############################################################################
 cmake_minimum_required(VERSION 3.18)
 project(LZ77GPU LANGUAGES C CXX CUDA)
 
 set(CMAKE_CXX_STANDARD   17)
 set(CMAKE_CUDA_STANDARD  17)
-set(CMAKE_CUDA_ARCHITECTURES 80)          # adjust if you need a different SM
+set(CMAKE_CUDA_ARCHITECTURES 80)
 
 ###############################################################################
-#  Helper (unchanged) – just for IDE grouping
+#  Helper – just for IDE grouping
 ###############################################################################
 macro(group_sources BASE_DIR)
     if (MSVC)
@@ -24,7 +24,7 @@ macro(group_sources BASE_DIR)
 endmacro()
 
 ###############################################################################
-#  Source lists  (UNCHANGED except we *remove* libcubwt.cu from SA_SOURCES)
+#  Source lists
 ###############################################################################
 set(UTIL_HEADERS
         src/Util/include/cuda_utils.cuh
@@ -33,7 +33,6 @@ set(UTIL_HEADERS
         src/Util/include/timer.cuh)
 set(UTIL_SOURCES  src/Util/src/timer.cu)
 
-# ---- ❶ *libcubwt.cu is no longer here – it lives in its own library* -------
 set(SA_SOURCES     src/SuffixArray/src/prefix_doubling.cu)
 set(SA_MAIN        src/SuffixArray/src/sa_profiling_main.cu)
 
@@ -44,18 +43,18 @@ set(LZ77_MAIN      src/LZ77/src/LZ77_main.cu)
 group_sources(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 ###############################################################################
-#  Third-party deps (FetchContent) – identical to your original file
+#  Third-party deps
 ###############################################################################
 include(FetchContent)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP          QUIET)
 
-# ---- SDSL -----------------------------------------------------------
+# SDSL
 FetchContent_Declare(sdsl GIT_REPOSITORY https://github.com/simongog/sdsl-lite)
 set(GENERATE_DOC OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(sdsl)
 
-# ---- divsufsort ------------------------------------------------------
+# divsufsort
 FetchContent_Declare(divsufsort
         GIT_REPOSITORY https://github.com/simongog/libdivsufsort.git
         GIT_TAG        2.0.1)
@@ -66,13 +65,13 @@ FetchContent_MakeAvailable(divsufsort)
 
 set(DIVSUFSORT_INCLUDE_DIR ${divsufsort_SOURCE_DIR}/include)
 
-# ---- CLI11 -----------------------------------------------------------
+# CLI11
 FetchContent_Declare(cli11
         GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
         GIT_TAG        v1.9.0)
 FetchContent_MakeAvailable(cli11)
 
-# ---- malloc_count ----------------------------------------------------
+# malloc_count
 FetchContent_Declare(malloc_count
         GIT_REPOSITORY https://github.com/bingmann/malloc_count.git
         GIT_TAG        v0.7.1)
@@ -82,7 +81,7 @@ add_library(malloc_count STATIC ${malloc_count_SOURCE_DIR}/malloc_count.c)
 target_include_directories(malloc_count PUBLIC ${malloc_count_SOURCE_DIR})
 
 ###############################################################################
-#  ❶ NEW:  single static library that holds libcubwt.cu
+#  single static library that holds libcubwt.cu
 ###############################################################################
 add_library(cubwt STATIC src/SuffixArray/src/libcubwt.cu)
 target_include_directories(cubwt PUBLIC
@@ -117,7 +116,6 @@ set(ALL_INCLUDES
 foreach(tgt IN ITEMS sa_profiler lz77)
     target_include_directories(${tgt} PRIVATE ${ALL_INCLUDES})
 
-    # ---- ❷ link cubwt here ------------------------------------------
     target_link_libraries(${tgt} PRIVATE
             cubwt util malloc_count
             CLI11::CLI11
@@ -134,7 +132,7 @@ foreach(tgt IN ITEMS sa_profiler lz77)
 endforeach()
 
 ###############################################################################
-#  Propagate divsufsort headers  (unchanged)
+#  Propagate divsufsort headers
 ###############################################################################
 target_include_directories(divsufsort   INTERFACE
         $<BUILD_INTERFACE:${divsufsort_SOURCE_DIR}/include>
@@ -143,9 +141,6 @@ target_include_directories(divsufsort64 INTERFACE
         $<BUILD_INTERFACE:${divsufsort_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${divsufsort_BINARY_DIR}/include>)
 
-###############################################################################
-#  Keep “test” clause exactly as you had it (no test target here)
-###############################################################################
 foreach(tgt IN ITEMS lz77 sa_profiler test)
     if (TARGET ${tgt})
         target_link_libraries(${tgt} PRIVATE

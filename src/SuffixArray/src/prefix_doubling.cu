@@ -76,14 +76,6 @@ void assign_ranks_kernel(const uint32_t* d_index, const uint32_t* d_diff, uint32
 }
 
 
-__global__
-void fill_shifted_ranks(const uint32_t* d_rank, uint32_t* d_rank_k, size_t k, size_t n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        d_rank_k[i] = (i + k < n) ? d_rank[i + k] : 0;
-    }
-}
-
 
 /**
  * Custom comparator functor for suffix indices. Replaces "SuffixKey" usage.
@@ -165,29 +157,14 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     // Prefix doubling
     for (size_t k = 1; k < n; k <<= 1) {
         // 1) Sort d_index by (rank[i], rank[i+k])
-        /*{
+        {
             // Create comparator on the fly
             auto t2 = now();
             SuffixComparator cmp(d_rank, k, n);
             thrust::device_ptr <uint32_t> d_index_ptr = thrust::device_pointer_cast(d_index);
             thrust::sort(thrust::device, d_index_ptr, d_index_ptr + n, cmp);
             record_time(g_sort_time_ns, t2);
-        }*/
-
-        auto t2 = now();
-        fill_shifted_ranks<<<gridSize, blockSize>>>(d_rank, d_rank_k, k, n);
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-        thrust::device_ptr<uint32_t> r1_ptr = thrust::device_pointer_cast(d_rank);
-        thrust::device_ptr<uint32_t> r2_ptr = thrust::device_pointer_cast(d_rank_k);
-        thrust::device_ptr<uint32_t> idx_ptr = thrust::device_pointer_cast(d_index);
-
-        thrust::sort_by_key(
-                thrust::make_zip_iterator(thrust::make_tuple(r1_ptr, r2_ptr)),
-                thrust::make_zip_iterator(thrust::make_tuple(r1_ptr + n, r2_ptr + n)),
-                idx_ptr
-        );
-        record_time(g_sort_time_ns, t2);
+        }
 
         // 2) compute diff array
         auto t3 = now();
