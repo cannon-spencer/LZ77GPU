@@ -1,7 +1,3 @@
-//
-// Created by yu hong on 11/17/24.
-//
-
 #include "kernel.cuh"
 
 __global__ void blockPSVNSVKernel(const Element* input, Element* psv_output,

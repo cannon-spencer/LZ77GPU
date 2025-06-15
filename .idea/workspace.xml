@@ -21,12 +21,76 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="d17a1d20-29e3-4696-a3c7-6de4de35150e" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/SA_Prefix_Doubling/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/CMakeLists.txt" beforeDir="false" afterPath="$PROJECT_DIR$/SA_Prefix_Doubling/CMakeLists.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/CMakeConfigureLog.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/CMakeConfigureLog.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/clion-Debug-log.txt" beforeDir="false" afterPath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/clion-Debug-log.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/Testing/Temporary/LastTest.log" beforeDir="false" afterPath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/Testing/Temporary/LastTest.log" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/main.cu" beforeDir="false" afterPath="$PROJECT_DIR$/SA_Prefix_Doubling/main.cu" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/SuffixArray/include/prefix_doubling.cuh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.main.cu.swp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/CMakeLists.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/.GPU_SA_libcubwt58712671.log.swp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/.gitignore" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/AUTHORS" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/CHANGES" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/CMakeLists.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/LICENSE" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/VERSION" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/query/cache-v2" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/query/cmakeFiles-v1" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/query/codemodel-v2" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/query/toolchains-v1" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/reply/cache-v2-9c65d3992d56c462d716.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/reply/cmakeFiles-v1-4b8e0e31766b765981f1.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/reply/codemodel-v2-e15158932111c0b1f21a.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/reply/directory-.-Debug-d0094a50bb2071803777.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/reply/index-2025-01-20T18-00-37-0948.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/reply/target-LZ_new-Debug-24ccae4d7946b1559e64.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/.cmake/api/v1/reply/toolchains-v1-1555a5ce31899eddd569.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeCache.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CMakeCCompiler.cmake" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CMakeCXXCompiler.cmake" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CMakeRCCompiler.cmake" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CMakeSystem.cmake" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdC/CMakeCCompilerId.c" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdC/a.exe" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdCUDA/CMakeCUDACompilerId.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdCXX/CMakeCXXCompilerId.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdCXX/a.exe" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/CMakeConfigureLog.yaml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/TargetDirectories.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/clion-Debug-log.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/clion-environment.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/cmake.check_cache" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/CMakeFiles/rules.ninja" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/Testing/Temporary/LastTest.log" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/build.ninja" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/cmake-build-debug/cmake_install.cmake" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/include/data_types.cuh" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/include/kernel.cuh" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/include/processor.cuh" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/include/timer.cuh" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/libcubwt.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/libcubwt.cuh" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/libcubwt_suffix_array.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/main.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/main_copy.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/src/kernel.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/src/processor.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/src/timer.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/SA_Prefix_Doubling/test.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/.cmake/api/v1/query/cache-v2" beforeDir="false" afterPath="$PROJECT_DIR$/src/SuffixArray/src/prefix_doubling.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/.cmake/api/v1/query/cmakeFiles-v1" beforeDir="false" afterPath="$PROJECT_DIR$/src/Util/include/cuda_utils.cuh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/.cmake/api/v1/query/codemodel-v2" beforeDir="false" afterPath="$PROJECT_DIR$/src/Util/include/memory_monitor.cuh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/.cmake/api/v1/query/toolchains-v1" beforeDir="false" afterPath="$PROJECT_DIR$/src/Util/include/profiler.cuh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeCache.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/3.26.4/CMakeCXXCompiler.cmake" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/3.26.4/CMakeSystem.cmake" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdCUDA/CMakeCUDACompilerId.cu" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdCXX/CMakeCXXCompilerId.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/3.26.4/CompilerIdCXX/a.exe" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/CMakeConfigureLog.yaml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/clion-Debug-log.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/clion-environment.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/CMakeFiles/cmake.check_cache" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmake-build-debug/Testing/Temporary/LastTest.log" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test.txt" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -71,11 +135,20 @@
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "web.server",
+    "settings.editor.selected.configurable": "reference.settings.deploy.options",
     "structure.view.defaults.are.configured": "true",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\chill\CLionProjects\Research\LZ77GPU\src\Util\include" />
+      <recent name="C:\Users\chill\CLionProjects\Research\LZ77GPU\src\LZ77\include" />
+      <recent name="C:\Users\chill\CLionProjects\Research\LZ77GPU\src\SuffixArray\include" />
+      <recent name="C:\Users\chill\CLionProjects\Research\LZ77GPU\src\SuffixArray\src" />
+      <recent name="C:\Users\chill\CLionProjects\Research\LZ77GPU\src\Util\src" />
+    </key>
+  </component>
   <component name="RunManager">
     <configuration name="LZ77GPU" type="CMakeRunConfiguration" factoryName="Application" REDIRECT_INPUT="false" ELEVATE="false" USE_EXTERNAL_CONSOLE="false" EMULATE_TERMINAL="false" PASS_PARENT_ENVS_2="true" PROJECT_NAME="LZ77GPU" TARGET_NAME="LZ77GPU" CONFIG_NAME="Debug" RUN_TARGET_PROJECT_NAME="LZ77GPU" RUN_TARGET_NAME="LZ77GPU">
       <method v="2">

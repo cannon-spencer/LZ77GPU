@@ -1,7 +1,3 @@
-//
-// Created by yu hong on 11/17/24.
-//
-
 #include "processor.cuh"
 
 PipelinePSVNSVProcessor::PipelinePSVNSVProcessor(int streams, size_t block_size, size_t shared_mem_size,

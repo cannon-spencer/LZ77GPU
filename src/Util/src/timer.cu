@@ -1,7 +1,3 @@
-//
-// Created by yu hong on 11/17/24.
-//
-
 #include "timer.cuh"
 
 Timer::Timer(const std::string& label) : name(label) {

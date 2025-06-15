@@ -1,7 +1,3 @@
-//
-// Created by yu hong on 11/17/24.
-//
-
 #ifndef LIBCUBWT_DATA_TYPES_CUH
 #define LIBCUBWT_DATA_TYPES_CUH
 

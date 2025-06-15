@@ -1,13 +1,9 @@
-//
-// Created by yu hong on 11/17/24.
-//
-
 #ifndef LIBCUBWT_PROCESSOR_CUH
 #define LIBCUBWT_PROCESSOR_CUH
 
 #include "kernel.cuh"
 #include "data_types.cuh"
-#include "timer.cuh"
+#include "../../Util/include/timer.cuh"
 #include <vector>
 #include <string>
 #include <fstream>

@@ -6,7 +6,7 @@
 #include <omp.h>
 #include <fstream>
 #include <chrono>
-#include "libcubwt.cuh"
+#include "../../SuffixArray/include/libcubwt.cuh"
 #include <sdsl/suffix_arrays.hpp>
 #include <iomanip>
 #include <atomic>

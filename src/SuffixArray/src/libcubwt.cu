@@ -21,7 +21,7 @@ Please see the file LICENSE for full copyright and license details.
 
 --*/
 
-#include "libcubwt.cuh"
+#include "../include/libcubwt.cuh"
 
 #if defined(_MSC_VER) && defined(__INTELLISENSE__)
     #define __launch_bounds__(block_size) /* */
