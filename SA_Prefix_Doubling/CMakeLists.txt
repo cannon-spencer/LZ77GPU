@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.8 FATAL_ERROR)
+set(CMAKE_CUDA_ARCHITECTURES 80)
 cmake_policy(SET CMP0104 NEW)
 cmake_policy(SET CMP0127 NEW)
 project(LZ77GPU LANGUAGES C CXX CUDA)  # Fixed: Added "C"
@@ -10,6 +11,7 @@ set(PSV_NSV_SOURCES
         src/processor.cu
 )
 add_executable(lz77_gpu main.cu libcubwt.cu ${PSV_NSV_SOURCES})
+
 add_executable(test test.cu libcubwt.cu)
 
 include(FetchContent)
@@ -71,6 +73,7 @@ endif()
 include_directories(BEFORE
         ${CUDAToolkit_INCLUDE_DIRS}
         include
+        ${SDSL_INCLUDE_PATH}
 )
 
 # Fetch CLI11
@@ -87,6 +90,7 @@ target_link_libraries(lz77_gpu
         CLI11::CLI11
         $<$<BOOL:${OpenMP_FOUND}>:OpenMP::OpenMP_CXX>
         malloc_count  # Fixed: Now linked properly
+        sdsl divsufsort divsufsort64
 )
 
 set_target_properties(lz77_gpu PROPERTIES

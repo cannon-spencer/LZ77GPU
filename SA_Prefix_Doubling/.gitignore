@@ -5,17 +5,13 @@
 !.vscode/extensions.json
 
 .idea/*
-
+*.log
 *.fasta
-
+*.bin
+*.slurm
 build/*
 
 temp
-
 test
 test.txt
 yeast.txt
-
-*.slurm
-*.bin
-
