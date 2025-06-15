@@ -22,9 +22,9 @@
   <component name="ChangeListManager">
     <list default="true" id="d17a1d20-29e3-4696-a3c7-6de4de35150e" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/CMakeLists.txt" beforeDir="false" afterPath="$PROJECT_DIR$/CMakeLists.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/SuffixArray/src/prefix_doubling.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/SuffixArray/src/prefix_doubling.cu" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/SuffixArray/src/sa_profiling_main.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/SuffixArray/src/sa_profiling_main.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/AUTHORS" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/CHANGES" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/VERSION" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -62,7 +62,7 @@
     "WebServerToolWindowFactoryState": "false",
     "cf.first.check.clang-format": "false",
     "cidr.known.project.marker": "true",
-    "git-widget-placeholder": "SA__Prefix__Doubling",
+    "git-widget-placeholder": "master",
     "last_opened_file_path": "C:/Users/chill/CLionProjects/Research/LZ77GPU",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
