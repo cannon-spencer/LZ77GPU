@@ -144,7 +144,7 @@ Let \$SA\$ be the suffix array for \$T\$, and \$i\$ an index in \$SA\$:
 By comparing the match lengths for \$PSV(i)\$ and \$NSV(i)\$, we efficiently find the longest leftward match.
 
 $$
-\mathrm{LZ77\_factor}(i) = \max \left\{ \mathrm{lcp}(T[i..],\ T[\mathrm{PSV}(i)..]),\ \mathrm{lcp}(T[i..],\ T[\mathrm{NSV}(i)..]) \right\}
+\mathrm{LZ77\_factor}(i) = \max \{ \mathrm{lcp}(T[i..],\ T[\mathrm{PSV}(i)..]),\ \mathrm{lcp}(T[i..],\ T[\mathrm{NSV}(i)..]) \}
 $$
 
 #### **Key GZLZ LZ77 Optimizations**
