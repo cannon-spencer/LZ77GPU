@@ -147,7 +147,6 @@ $$
 \mathrm{LZ77\_factor}(i) = \max \left\{ \mathrm{lcp}(T[i..],\ T[\mathrm{PSV}(i)..]),\ \mathrm{lcp}(T[i..],\ T[\mathrm{NSV}(i)..]) \right\}
 $$
 
-
 #### **Key GZLZ LZ77 Optimizations**
 
 * **Blockwise Kernels:** Compute PSV/NSV in parallel blocks with batch merging for ultra-large files.
