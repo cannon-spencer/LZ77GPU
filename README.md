@@ -1,4 +1,4 @@
-# 🌌 **GZLZ** — GPU-Accelerated LZ77 Compression
+# **GZLZ** — GPU-Accelerated LZ77 Compression
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](#license)
 [![libCUBWT](https://img.shields.io/badge/libCUBWT-GPU--BWT-blue.svg)](https://github.com/kobolabs/libcubwt)
@@ -110,7 +110,6 @@ graph LR
 A["BANANA_BANANA"] -- "BANANA → (0,6)" --> B["(0,6)_BANANA"]
 B -- "BANANA → (7,6)" --> C["(0,6)_(7,6)"]
 ```
-
 * First `"BANANA"`: Encoded as literal.
 * Second `"BANANA"`: Encoded as `(offset=0, length=6, next='_')`, etc.
 
@@ -124,8 +123,8 @@ flowchart TD
     COMPUTE_PSV --> DECIDE{"Is memory limited?"}
     COMPUTE_NSV --> DECIDE
 
-    DECIDE -- "Yes<br/><sub>Stream&nbsp;next&nbsp;batch</sub>" --> COMPUTE_PSV
-    DECIDE -- "Yes<br/><sub>Stream&nbsp;next&nbsp;batch</sub>" --> COMPUTE_NSV
+    DECIDE -- "Yes<br/><sub>Next&nbsp;batch</sub>" --> COMPUTE_PSV
+    DECIDE -- "Yes<br/><sub>Next&nbsp;batch</sub>" --> COMPUTE_NSV
     DECIDE -- "No" --> KKP3["KKP3 Factorization"]
 
     classDef step fill:#f0f6ff,stroke:#6fa1f2,stroke-width:2px;
@@ -145,8 +144,9 @@ Let \$SA\$ be the suffix array for \$T\$, and \$i\$ an index in \$SA\$:
 By comparing the match lengths for \$PSV(i)\$ and \$NSV(i)\$, we efficiently find the longest leftward match.
 
 $$
-\text{LZ77\_factor}(i) = \max \left\{ \operatorname{lcp}(T[i..],\ T[PSV(i)..]),\ \operatorname{lcp}(T[i..],\ T[NSV(i)..]) \right\}
+\mathrm{LZ77\_factor}(i) = \max \left\{ \mathrm{lcp}(T[i..],\ T[\mathrm{PSV}(i)..]),\ \mathrm{lcp}(T[i..],\ T[\mathrm{NSV}(i)..]) \right\}
 $$
+
 
 #### **Key GZLZ LZ77 Optimizations**
 
@@ -167,9 +167,6 @@ pie title GPU Memory Usage (32× Dataset)
 "libCUBWT GPU" : 55
 ```
 
-### Speedup Analysis
-
-
 ---
 
 ## Bioinformatics & Compression Applications
@@ -177,7 +174,3 @@ pie title GPU Memory Usage (32× Dataset)
 GZLZ directly targets critical needs in bioinformatics, where genomic data volumes explode exponentially. Optimized GPU implementations allow researchers and practitioners to handle larger datasets efficiently, accelerating genome assembly, sequence alignment, and high-throughput data compression workflows.
 
 ---
-
-## License
-
-GZLZ is released under the **Mozilla Public License 2.0**. See [LICENSE](LICENSE) for full details.
