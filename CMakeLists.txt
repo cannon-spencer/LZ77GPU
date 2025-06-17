@@ -40,6 +40,8 @@ set(LZ77_SOURCES   src/LZ77/src/kernel.cu
         src/LZ77/src/processor.cu)
 set(LZ77_MAIN      src/LZ77/src/LZ77_main.cu)
 
+set(TEST_SOURCES Tests/lz77_tests.cpp)
+
 group_sources(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 ###############################################################################
@@ -80,6 +82,13 @@ FetchContent_MakeAvailable(malloc_count)
 add_library(malloc_count STATIC ${malloc_count_SOURCE_DIR}/malloc_count.c)
 target_include_directories(malloc_count PUBLIC ${malloc_count_SOURCE_DIR})
 
+# Catch2
+FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.6.0)
+FetchContent_MakeAvailable(Catch2)
+
 ###############################################################################
 #  single static library that holds libcubwt.cu
 ###############################################################################
@@ -99,10 +108,14 @@ target_include_directories(util PUBLIC
 target_link_libraries(util PUBLIC CUDA::cudart)
 
 ###############################################################################
-#  Main executables
+#  Executables
 ###############################################################################
 add_executable(sa_profiler ${SA_MAIN} ${SA_SOURCES})
 add_executable(lz77        ${LZ77_MAIN} ${LZ77_SOURCES})
+
+add_executable(tests       ${TEST_SOURCES})
+target_link_libraries(tests PRIVATE Catch2::Catch2WithMain)
+
 
 ###############################################################################
 #  Common configuration
@@ -141,7 +154,7 @@ target_include_directories(divsufsort64 INTERFACE
         $<BUILD_INTERFACE:${divsufsort_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${divsufsort_BINARY_DIR}/include>)
 
-foreach(tgt IN ITEMS lz77 sa_profiler test)
+foreach(tgt IN ITEMS lz77 sa_profiler tests)
     if (TARGET ${tgt})
         target_link_libraries(${tgt} PRIVATE
                 sdsl divsufsort divsufsort64 malloc_count CLI11::CLI11
@@ -149,3 +162,12 @@ foreach(tgt IN ITEMS lz77 sa_profiler test)
                 $<$<BOOL:${OpenMP_FOUND}>:OpenMP::OpenMP_CXX>)
     endif()
 endforeach()
+
+###############################################################################
+#  CTest
+###############################################################################
+
+include(CTest)
+enable_testing()
+catch_discover_tests(tests)
+target_include_directories(tests PRIVATE ${ALL_INCLUDES})
