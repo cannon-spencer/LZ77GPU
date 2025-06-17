@@ -1,39 +1,31 @@
-name: CI - Build & Test
+name: CI
 
 on:
   push:
-    branches: ['**']
   pull_request:
-    branches: ['**']
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  build-test:
+    runs-on: ubuntu-22.04
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Install CUDA (11.8 is stable & commonly used, can adjust as needed)
-      - name: Set up CUDA
+      - name: Set up CUDA 12.x
         uses: Jimver/cuda-toolkit@v0.2.11
         with:
-          cuda: '11.8.0'
+          cuda: '12.4.1'
+        # Or try '11.8.0' if your code needs that
 
-      # Install build dependencies
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build
 
       - name: Configure CMake
-        run: |
-          cmake -S . -B build -GNinja
+        run: cmake -B build -G Ninja
 
-      - name: Build all targets
-        run: |
-          cmake --build build
+      - name: Build
+        run: cmake --build build
 
-      - name: Run tests
-        run: |
-          cd build
-          ctest --output-on-failure
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
