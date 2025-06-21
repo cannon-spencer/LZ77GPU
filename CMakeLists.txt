@@ -51,12 +51,6 @@ include(FetchContent)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP QUIET)
 
-# ── SDSL ─────────────────────────────────────────────────────────────────────
-FetchContent_Declare(sdsl
-        GIT_REPOSITORY https://github.com/simongog/sdsl-lite.git)
-set(GENERATE_DOC OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(sdsl)
-
 # ── divsufsort ───────────────────────────────────────────────────────────────
 FetchContent_Declare(divsufsort
         GIT_REPOSITORY https://github.com/simongog/libdivsufsort.git
@@ -66,6 +60,13 @@ set(BUILD_EXAMPLES     OFF CACHE BOOL "" FORCE)
 set(BUILD_DIVSUFSORT64 ON  CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(divsufsort)
 set(DIVSUFSORT_INCLUDE_DIR ${divsufsort_SOURCE_DIR}/include)
+
+# ── SDSL ─────────────────────────────────────────────────────────────────────
+FetchContent_Declare(sdsl
+        GIT_REPOSITORY https://github.com/simongog/sdsl-lite.git)
+set(GENERATE_DOC OFF CACHE BOOL "" FORCE)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${divsufsort_SOURCE_DIR}/include")
+FetchContent_MakeAvailable(sdsl)
 
 # ── CLI11 ────────────────────────────────────────────────────────────────────
 FetchContent_Declare(cli11
@@ -140,7 +141,8 @@ set(ALL_INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Util/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SuffixArray/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src/LZ77/include
-        ${DIVSUFSORT_INCLUDE_DIR})
+        ${DIVSUFSORT_INCLUDE_DIR}
+        ${sdsl_SOURCE_DIR}/include)
 
 foreach(tgt IN ITEMS sa_profiler lz77)
     target_include_directories(${tgt} PRIVATE ${ALL_INCLUDES})

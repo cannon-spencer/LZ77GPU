@@ -6,11 +6,11 @@
 #include <omp.h>
 #include <fstream>
 #include <chrono>
-#include "../../SuffixArray/include/libcubwt.cuh"
 #include <sdsl/suffix_arrays.hpp>
 #include <iomanip>
 #include <atomic>
 
+#include "libcubwt.cuh"
 
 
 // default parameters
