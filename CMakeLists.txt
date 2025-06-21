@@ -67,6 +67,7 @@ FetchContent_Declare(sdsl
 set(GENERATE_DOC OFF CACHE BOOL "" FORCE)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${divsufsort_SOURCE_DIR}/include")
 FetchContent_MakeAvailable(sdsl)
+target_include_directories(sdsl INTERFACE ${DIVSUFSORT_INCLUDE_DIR})
 
 # ── CLI11 ────────────────────────────────────────────────────────────────────
 FetchContent_Declare(cli11

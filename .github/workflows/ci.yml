@@ -1,33 +1,19 @@
-name: CI
+name: Remote SLURM CI
 
 on:
   push:
   pull_request:
 
 jobs:
-  build-test:
-    runs-on: ubuntu-22.04
-
+  remote-test:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up CUDA 11.8
-        uses: Jimver/cuda-toolkit@v0.2.11
+      - name: Trigger remote SLURM test job
+        uses: appleboy/ssh-action@v0.1.10
         with:
-          cuda: '11.8.0'
-
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build
-
-      - name: Configure CMake
-        run: cmake -B build -G Ninja
-
-      - name: Build all executables
-        run: cmake --build build
-
-      - name: Confirm executables exist
-        run: |
-          test -x build/sa_profiler
-          test -x build/lz77
-          test -x build/tests
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "Running secure SLURM CI script..."
+            bash ~/scripts/run_ci.sh ${{ github.ref_name }}
