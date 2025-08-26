@@ -4,6 +4,20 @@
 cmake_minimum_required(VERSION 3.18)
 project(LZ77GPU LANGUAGES C CXX CUDA)
 
+# Add the cmake build type
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
+    set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -g -G -O0")
+    add_definitions(-DDEBUG)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
+    set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -O3")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_ARCHITECTURES 80)
@@ -39,6 +53,7 @@ set(SA_MAIN     src/SuffixArray/src/sa_profiling_main.cu)
 set(LZ77_SOURCES src/LZ77/src/kernel.cu
         src/LZ77/src/processor.cu)
 set(LZ77_MAIN    src/LZ77/src/LZ77_main.cu)
+set(LZ77_PROCESSOR   src/LZ77/src/LZ77_processor.cu)
 
 set(TEST_SOURCES src/Tests/lz77_tests.cu)
 
@@ -129,11 +144,14 @@ target_include_directories(suffix_array PUBLIC
 set_target_properties(suffix_array PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON)
 
+target_compile_options(suffix_array PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>: -use_fast_math --extended-lambda --expt-relaxed-constexpr>)
+
 ###############################################################################
 #  Main executables
 ###############################################################################
 add_executable(sa_profiler ${SA_MAIN})
-add_executable(lz77        ${LZ77_MAIN} ${LZ77_SOURCES})
+add_executable(lz77        ${LZ77_MAIN} ${LZ77_PROCESSOR})
 
 ###############################################################################
 #  Shared include paths & options

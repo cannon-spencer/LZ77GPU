@@ -13,25 +13,6 @@
 #include "cuda_utils.cuh"
 #include "profiler.cuh"
 
-
-
-/**
- * CUDA kernel to initialize the rank and index arrays for suffix array construction.
- *
- * - Converts the input string `s` (8-bit characters) into 32-bit initial ranks.
- * - Initializes the index array with values [0, 1, 2, ..., n-1].
- * */
-
-__global__
-void initialize_rank_and_index(const uint8_t* s, uint32_t* d_rank, uint32_t* d_index, size_t n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        d_rank[i] = static_cast<uint32_t>(s[i]);
-        d_index[i] = i;
-    }
-}
-
-
 /**
  * Kernel to compute the "diff" array by comparing consecutive sorted suffix indices:
  * If sorted suffix i differs from suffix i-1, set diff[i] = 1 else 0.
@@ -140,8 +121,17 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     cudaMalloc(&d_s, n * sizeof(uint8_t));
     CHECK_CUDA_ERROR(cudaMemcpy(d_s, s.data(), n * sizeof(uint8_t), cudaMemcpyHostToDevice));
 
-    // Do initializations to correct structure in parallel
-    initialize_rank_and_index<<<gridSize, blockSize>>>(d_s, d_rank, d_index, n);
+    // Initialize the index and rank array using the thrust
+    thrust::device_ptr<uint32_t> d_index_ptr = thrust::device_pointer_cast(d_index);
+    thrust::sequence(thrust::device, d_index_ptr, d_index_ptr + n, 0);
+
+    
+    thrust::device_ptr<const uint8_t> s_ptr = thrust::device_pointer_cast(d_s);
+    thrust::device_ptr<uint32_t> rank_ptr = thrust::device_pointer_cast(d_rank);
+    thrust::transform(thrust::device, 
+                     s_ptr, s_ptr + n, 
+                     rank_ptr,
+                     [] __device__ (uint8_t c) { return static_cast<uint32_t>(c); });
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     cudaFree(d_s);
 
@@ -169,22 +159,18 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
         // 2) compute diff array
         auto t3 = now();
         compute_diff_kernel<<<gridSize, blockSize>>>(d_index, d_rank, n, k, d_diff);
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        record_time(g_kernel_diff_time_ns, t3);
+
 
         // 3) inclusive scan => group IDs
         {
-            auto t4 = now();
             thrust::device_ptr<uint32_t> d_diff_ptr = thrust::device_pointer_cast(d_diff);
             thrust::inclusive_scan(d_diff_ptr, d_diff_ptr + n, d_diff_ptr);
-            record_time(g_scan_time_ns, t4);
         }
 
         // 4) assign new ranks => rank[index[i]] = d_diff[i]
-        auto t5 = now();
         assign_ranks_kernel<<<gridSize, blockSize>>>(d_index, d_diff, d_rank, n);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        record_time(g_kernel_assign_time_ns, t5);
+        record_time(g_kernel_assign_time_ns, t3);
 
 
         // 5) check if all ranks are distinct => if d_diff[n-1] == n
