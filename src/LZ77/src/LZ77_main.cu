@@ -10,7 +10,7 @@
 #include <iomanip>
 #include <atomic>
 
-#include "libcubwt.cuh"
+#include "prefix_doubling.cuh"
 #include "LZ77_processor.cuh"
 
 int main(int argc, char **argv) {
@@ -48,42 +48,38 @@ int main(int argc, char **argv) {
     profiler.start();
 
     if(length <= UINT32_MAX){
-        // allocate device storage
-        void *device_storage = nullptr;
-        int result = libcubwt_allocate_device_storage(&device_storage, length);
-
-        if (result == LIBCUBWT_NO_ERROR){
-            // generate suffix array
-            std::vector<uint32_t> temp_SA(length);
-            result = libcubwt_sa(device_storage, data.data(), temp_SA.data(), length);
-            if (result != LIBCUBWT_NO_ERROR) {
-                std::cerr << "Failed to generate suffix array: " << result << std::endl;
-                libcubwt_free_device_storage(device_storage);
-                return 1;
+        try {
+            // Use prefix_doubling algorithm to generate suffix array
+            std::cout << "Using prefix_doubling for SA construction" << std::endl;
+            std::vector<uint32_t> temp_SA = build_suffix_array_prefix_doubling(data);
+            
+            // Verify the returned suffix array size
+            if (temp_SA.size() != length) {
+                std::cerr << "Error: prefix_doubling returned incorrect size. Expected: " 
+                          << length << ", Got: " << temp_SA.size() << std::endl;
+                throw std::runtime_error("Suffix array size mismatch");
             }
-            libcubwt_free_device_storage(device_storage);
-            // Copy to SA (ensure types match)
+            
+            // Convert from uint32_t to size_t (ensure types match)
             for (size_t i = 0; i < length; ++i) {
                 SA[i] = static_cast<size_t>(temp_SA[i]);
             }
 
-            std::cout << "Used libcubwt for SA construction" << std::endl;
+            std::cout << "prefix_doubling SA construction completed successfully" << std::endl;
 
-        }
-        else{
-            std::cout << "GPU memory allocation failed (error: " << result << "), switching to SDSL" << std::endl;
+        } catch (const std::exception& e) {
+            // Fallback to SDSL if prefix_doubling fails
+            std::cout << "prefix_doubling failed (" << e.what() << "), switching to SDSL" << std::endl;
             try {
-                {
-                    sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
-                    std::cout << "Input file size: " << length << " bytes" << std::endl;
+                sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
+                std::cout << "Input file size: " << length << " bytes" << std::endl;
 
-                    sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
-                    std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
-                }
+                sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
+                std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
 
-                std::cout << "SA construction finished" << std::endl;
-            } catch (const std::exception& e) {
-                std::cerr << "Failed to construct suffix array using SDSL: " << e.what() << std::endl;
+                std::cout << "SDSL SA construction finished" << std::endl;
+            } catch (const std::exception& sdsl_e) {
+                std::cerr << "Failed to construct suffix array using SDSL: " << sdsl_e.what() << std::endl;
                 return 1;
             }
         }

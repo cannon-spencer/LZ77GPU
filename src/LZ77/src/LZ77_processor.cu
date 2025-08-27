@@ -434,18 +434,6 @@ void PipelinePSVNSVProcessor::rearrangeTextOrder(const size_t* sa_array,
         }
     }
 
-    // std::cout << "PSV after rearrangement: ";
-    // for(size_t i = 0; i < length; i++) {
-    //     std::cout << psv[i] << " ";
-    // }
-    // std::cout << std::endl;
-
-    // std::cout << "NSV after rearrangement: ";
-    // for(size_t i = 0; i < length; i++) {
-    //     std::cout << nsv[i] << " ";
-    // }
-    // std::cout << std::endl;
-
     profiler.start();
     std::string lz_output = output_prefix + "_lz77.bin";
     ComputeLZ77(data, psv, nsv, length - 1, lz_output);
