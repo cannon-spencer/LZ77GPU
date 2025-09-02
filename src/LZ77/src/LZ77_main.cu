@@ -13,6 +13,76 @@
 #include "prefix_doubling.cuh"
 #include "LZ77_processor.cuh"
 
+// Template function for processing LZ77 with different SA types
+template<typename SA_t>
+void processLZ77(const std::vector<uint8_t>& data, const std::string& output_prefix) {
+    size_t length = data.size();
+    std::vector<SA_t> SA(length);
+    
+    GPUProfiler profiler;
+    profiler.start();
+    
+    if constexpr (std::is_same_v<SA_t, uint32_t>) {
+        // Use prefix_doubling for uint32_t (small files)
+        try {
+            std::cout << "Using prefix_doubling for SA construction (uint32_t)" << std::endl;
+            std::vector<uint32_t> temp_SA = build_suffix_array_prefix_doubling(data);
+            
+            // Verify the returned suffix array size
+            if (temp_SA.size() != length) {
+                std::cerr << "Error: prefix_doubling returned incorrect size. Expected: " 
+                          << length << ", Got: " << temp_SA.size() << std::endl;
+                throw std::runtime_error("Suffix array size mismatch");
+            }
+            
+            // Direct assignment since types match
+            SA = std::move(temp_SA);
+            std::cout << "prefix_doubling SA construction completed successfully" << std::endl;
+            
+        } catch (const std::exception& e) {
+            // Fallback to SDSL for uint32_t
+            std::cout << "prefix_doubling failed (" << e.what() << "), switching to SDSL" << std::endl;
+            try {
+                sdsl::int_vector<32> sdsl_sa(length);
+                sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
+                
+                // Convert from SDSL to uint32_t
+                for (size_t i = 0; i < length; ++i) {
+                    SA[i] = static_cast<uint32_t>(sdsl_sa[i]);
+                }
+                std::cout << "SDSL SA construction finished (uint32_t)" << std::endl;
+                
+            } catch (const std::exception& sdsl_e) {
+                std::cerr << "Failed to construct suffix array using SDSL: " << sdsl_e.what() << std::endl;
+                throw;
+            }
+        }
+    } else {
+        // Use SDSL for size_t (large files)
+        try {
+            std::cout << "Using SDSL for SA construction (size_t)" << std::endl;
+            sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
+            sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
+            std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
+            std::cout << "SDSL SA construction finished (size_t)" << std::endl;
+            
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to construct suffix array using SDSL: " << e.what() << std::endl;
+            throw;
+        }
+    }
+    
+    profiler.stop("Suffix Array Generation");
+    std::cout << "Before processor initialized" << std::endl;
+    
+    // Create templated processor
+    PipelinePSVNSVProcessor processor;
+    std::cout << "After processor initialized" << std::endl;
+    
+    // Process with appropriate type
+    processor.template process<SA_t>(SA.data(), data.data(), length, output_prefix);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0] << " <input_file> <output_prefix>" << std::endl;
@@ -30,7 +100,7 @@ int main(int argc, char **argv) {
     }
 
     // Read the file into a vector of uint8_t
-    std::vector <uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     file.close();
 
     if (data.empty()) {
@@ -38,73 +108,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-
-    /* Create Suffix Array and Inverse Suffix Array using lib_cubwt */
+    // Add null terminator for suffix array construction
     data.push_back(0);
     size_t length = data.size();
-    std::vector<size_t> SA(length);
-
-    GPUProfiler profiler;
-    profiler.start();
-
-    if(length <= UINT32_MAX){
-        try {
-            // Use prefix_doubling algorithm to generate suffix array
-            std::cout << "Using prefix_doubling for SA construction" << std::endl;
-            std::vector<uint32_t> temp_SA = build_suffix_array_prefix_doubling(data);
-            
-            // Verify the returned suffix array size
-            if (temp_SA.size() != length) {
-                std::cerr << "Error: prefix_doubling returned incorrect size. Expected: " 
-                          << length << ", Got: " << temp_SA.size() << std::endl;
-                throw std::runtime_error("Suffix array size mismatch");
-            }
-            
-            // Convert from uint32_t to size_t (ensure types match)
-            for (size_t i = 0; i < length; ++i) {
-                SA[i] = static_cast<size_t>(temp_SA[i]);
-            }
-
-            std::cout << "prefix_doubling SA construction completed successfully" << std::endl;
-
-        } catch (const std::exception& e) {
-            // Fallback to SDSL if prefix_doubling fails
-            std::cout << "prefix_doubling failed (" << e.what() << "), switching to SDSL" << std::endl;
-            try {
-                sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
-                std::cout << "Input file size: " << length << " bytes" << std::endl;
-
-                sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
-                std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
-
-                std::cout << "SDSL SA construction finished" << std::endl;
-            } catch (const std::exception& sdsl_e) {
-                std::cerr << "Failed to construct suffix array using SDSL: " << sdsl_e.what() << std::endl;
-                return 1;
-            }
-        }
-    }else{
-        try {
-            {
-                sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
-
-                std::cout << "Used SDSL for SA construction" << std::endl;
-                sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
-                std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
-            }
-
-        } catch (const std::exception& e) {
-            std::cerr << "Failed to construct suffix array using SDSL: " << e.what() << std::endl;
-            return 1;
-        }
-    }
+    
+    std::cout << "Input file size: " << length << " bytes" << std::endl;
 
     try {
-        profiler.stop("Suffix Array Generation");
-        std::cout << "Before processor initialized" << std::endl;
-        PipelinePSVNSVProcessor processor;
-        std::cout << "After processor initialized" << std::endl;
-        processor.process(SA.data(), data.data(), length , output_prefix);
+        // Choose SA type based on file size
+        if (length <= UINT32_MAX) {
+            std::cout << "File size fits in uint32_t, using optimized 32-bit processing" << std::endl;
+            processLZ77<uint32_t>(data, output_prefix);
+        } else {
+            std::cout << "File size requires size_t, using 64-bit processing" << std::endl;
+            processLZ77<size_t>(data, output_prefix);
+        }
+        
+        std::cout << "LZ77 compression completed successfully" << std::endl;
+        
     } catch (const std::exception& e) {
         std::cerr << "Error occurred: " << e.what() << std::endl;
         cudaError_t err = cudaGetLastError();

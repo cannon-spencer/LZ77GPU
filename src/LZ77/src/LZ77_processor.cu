@@ -39,10 +39,11 @@ float GPUProfiler::stop(const char* operation_name) {
     return milliseconds;
 }
 
-//Used for merging in large file(Stream mode)
+// Template kernel implementations
+template<typename SA_t>
 __global__ void processPSVTasksKernel(
-    const size_t* __restrict__ sa_array,
-    size_t* __restrict__ results,
+    const SA_t* __restrict__ sa_array,
+    SA_t* __restrict__ results,
     const size_t* __restrict__ positions,
     const size_t num_tasks,
     const size_t start_pos,
@@ -52,7 +53,8 @@ __global__ void processPSVTasksKernel(
     if (tid >= num_tasks) return;
 
     const size_t pos = positions[tid];
-    const size_t current = sa_array[pos];
+    const SA_t current = sa_array[pos];
+    const SA_t MAX_VAL = get_max_value<SA_t>();
     
     for (size_t j = end_pos; j-- > start_pos;) {
         if (sa_array[j] < current) {
@@ -60,12 +62,13 @@ __global__ void processPSVTasksKernel(
             return;
         }
     }
-    results[tid] = SIZE_MAX;
+    results[tid] = MAX_VAL;
 }
 
+template<typename SA_t>
 __global__ void processNSVTasksKernel(
-    const size_t* __restrict__ sa_array,
-    size_t* __restrict__ results,
+    const SA_t* __restrict__ sa_array,
+    SA_t* __restrict__ results,
     const size_t* __restrict__ positions,
     const size_t num_tasks,
     const size_t start_pos,
@@ -75,7 +78,8 @@ __global__ void processNSVTasksKernel(
     if (tid >= num_tasks) return;
 
     const size_t pos = positions[tid];
-    const size_t current = sa_array[pos];
+    const SA_t current = sa_array[pos];
+    const SA_t MAX_VAL = get_max_value<SA_t>();
     
     for (size_t j = start_pos; j < end_pos; ++j) {
         if (sa_array[j] < current) {
@@ -83,36 +87,38 @@ __global__ void processNSVTasksKernel(
             return;
         }
     }
-    results[tid] = SIZE_MAX;
+    results[tid] = MAX_VAL;
 }
 
-//Used in stream processing
+template<typename SA_t>
 __global__ void computePSVNSVKernel(
-    const size_t* __restrict__ input,
-    size_t* __restrict__ psv_output,
-    size_t* __restrict__ nsv_output,
+    const SA_t* __restrict__ input,
+    SA_t* __restrict__ psv_output,
+    SA_t* __restrict__ nsv_output,
     const size_t length) 
 {
-    extern __shared__ size_t shared_data[];
+    extern __shared__ uint8_t shared_mem[];
+    SA_t* shared_data = reinterpret_cast<SA_t*>(shared_mem);
     
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
     const int gid = bid * blockDim.x + tid;
+    const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        psv_output[gid] = SIZE_MAX;
-        nsv_output[gid] = SIZE_MAX;
+        psv_output[gid] = MAX_VAL;
+        nsv_output[gid] = MAX_VAL;
     }
 
     if (gid < length) {
         shared_data[tid] = input[gid];
     } else {
-        shared_data[tid] = SIZE_MAX;
+        shared_data[tid] = MAX_VAL;
     }
     __syncthreads();
 
     if (gid < length) {
-        const size_t current = shared_data[tid];
+        const SA_t current = shared_data[tid];
         
         for(int i = tid - 1; i >= 0; --i) {
             if(shared_data[i] < current) {
@@ -130,31 +136,31 @@ __global__ void computePSVNSVKernel(
     }
 }
 
-
-//Used in full GPU processing
-__global__ void computePSVKernel(const size_t* __restrict__ input,
-                               size_t* __restrict__ psv_output,
+template<typename SA_t>
+__global__ void computePSVKernel(const SA_t* __restrict__ input,
+                               SA_t* __restrict__ psv_output,
                                const size_t length) {
-    extern __shared__ size_t shared_data[];
+    extern __shared__ uint8_t shared_mem[];
+    SA_t* shared_data = reinterpret_cast<SA_t*>(shared_mem);
 
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
     const int gid = bid * blockDim.x + tid;
+    const SA_t MAX_VAL = get_max_value<SA_t>();
 
-    //initialized
     if (gid < length) {
-        psv_output[gid] = SIZE_MAX;
+        psv_output[gid] = MAX_VAL;
     }
 
     if (gid < length) {
         shared_data[tid] = input[gid];
     } else {
-        shared_data[tid] = SIZE_MAX;
+        shared_data[tid] = MAX_VAL;
     }
     __syncthreads();
 
     if (gid < length) {
-        size_t current = shared_data[tid];
+        SA_t current = shared_data[tid];
 
         for (int i = tid - 1; i >= 0; --i) {
             if (shared_data[i] < current) {
@@ -165,29 +171,31 @@ __global__ void computePSVKernel(const size_t* __restrict__ input,
     }
 }
 
-//Used in full GPU processing
-__global__ void computeNSVKernel(const size_t* __restrict__ input,
-                               size_t* __restrict__ nsv_output,
+template<typename SA_t>
+__global__ void computeNSVKernel(const SA_t* __restrict__ input,
+                               SA_t* __restrict__ nsv_output,
                                const size_t length) {
-    extern __shared__ size_t shared_data[];
+    extern __shared__ uint8_t shared_mem[];
+    SA_t* shared_data = reinterpret_cast<SA_t*>(shared_mem);
 
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
     const int gid = bid * blockDim.x + tid;
+    const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        nsv_output[gid] = SIZE_MAX;
+        nsv_output[gid] = MAX_VAL;
     }
 
     if (gid < length) {
         shared_data[tid] = input[gid];
     } else {
-        shared_data[tid] = SIZE_MAX;
+        shared_data[tid] = MAX_VAL;
     }
     __syncthreads();
 
     if (gid < length) {
-        size_t current = shared_data[tid];
+        SA_t current = shared_data[tid];
 
         for (int i = tid + 1; i < blockDim.x && i < length; ++i) {
             if (shared_data[i] < current) {
@@ -198,19 +206,20 @@ __global__ void computeNSVKernel(const size_t* __restrict__ input,
     }
 }
 
-//used in full GPU processing
+template<typename SA_t>
 __global__ void processPSVBoundariesKernel(
-        size_t* __restrict__ psv_output,
-        const size_t* __restrict__ input,
+        SA_t* __restrict__ psv_output,
+        const SA_t* __restrict__ input,
         const size_t length,
         const size_t block_size) {
     const int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        size_t current = input[gid];
+        SA_t current = input[gid];
         const int current_block = gid / block_size;
 
-        if (current_block > 0 && psv_output[gid] == SIZE_MAX) {
+        if (current_block > 0 && psv_output[gid] == MAX_VAL) {
             size_t block_start = (gid / block_size) * block_size;
             for (size_t i = block_start - 1; i != (size_t)-1; --i) {
                 if (input[i] < current) {
@@ -222,20 +231,21 @@ __global__ void processPSVBoundariesKernel(
     }
 }
 
-// used in fullGPU
+template<typename SA_t>
 __global__ void processNSVBoundariesKernel(
-        size_t* __restrict__ nsv_output,
-        const size_t* __restrict__ input,
+        SA_t* __restrict__ nsv_output,
+        const SA_t* __restrict__ input,
         const size_t length,
         const size_t block_size) {
     const int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        size_t current = input[gid];
+        SA_t current = input[gid];
         const int total_blocks = (length + block_size - 1) / block_size;
         const int current_block = gid / block_size;
 
-        if (current_block < total_blocks - 1 && nsv_output[gid] == SIZE_MAX) {
+        if (current_block < total_blocks - 1 && nsv_output[gid] == MAX_VAL) {
             size_t block_end = ((gid / block_size) + 1) * block_size;
             for (size_t i = block_end; i < length; ++i) {
                 if (input[i] < current) {
@@ -247,19 +257,19 @@ __global__ void processNSVBoundariesKernel(
     }
 }
 
+template<typename SA_t>
 __global__ void textOrderMapping(
-    const size_t* sa_array,
-    const size_t* input,
-    size_t* output,
+    const SA_t* sa_array,
+    const SA_t* input,
+    SA_t* output,
     size_t length
 ) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < length) {
-        size_t pos = sa_array[idx];
+        SA_t pos = sa_array[idx];
         output[pos] = input[idx];
     }
 }
-
 
 void PipelinePSVNSVProcessor::calculateAvailableMemory() {
     size_t free_memory, total_memory;
@@ -277,15 +287,17 @@ bool PipelinePSVNSVProcessor::canProcessFullGPU(size_t length) {
     return peak_memory <= available_memory;
 }
 
-    // LZ77 Factor computation using PSV and NSV
+template<typename SA_t>
 std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor(
-    uint8_t *data, size_t i, size_t psv, size_t nsv, size_t n) {
+    const uint8_t *data, size_t i, SA_t psv, SA_t nsv, size_t n) {
     
     size_t len = 0;
     size_t pos = 0;
+    const SA_t MAX_VAL = get_max_value<SA_t>();
 
-    // Helper function to compute match length from a given position
-    auto matchLength = [&](size_t baseIdx) -> size_t {
+    auto matchLength = [&](SA_t baseIdx) -> size_t {
+        if (is_invalid_value(baseIdx)) return 0;
+        
         size_t l = 0;
         while (i + l < n && baseIdx + l < n && data[baseIdx + l] == data[i + l]) {
             ++l;
@@ -293,61 +305,53 @@ std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor(
         return l;
     };
 
-    // If both PSV and NSV are invalid, output literal character
-    if (psv == SIZE_MAX && nsv == SIZE_MAX) {
+    if (psv == MAX_VAL && nsv == MAX_VAL) {
         return std::make_pair(std::make_pair(data[i], 0), i + 1);
     }
     
-    // Only PSV is valid
-    if (nsv == SIZE_MAX) {
+    if (nsv == MAX_VAL) {
         len = matchLength(psv);
-        pos = psv;
+        pos = static_cast<size_t>(psv);
     }
-    // Only NSV is valid  
-    else if (psv == SIZE_MAX) {
+    else if (psv == MAX_VAL) {
         len = matchLength(nsv);
-        pos = nsv;
+        pos = static_cast<size_t>(nsv);
     }
-    // Both PSV and NSV are valid - choose the one that gives longer match
     else {
         size_t psv_len = matchLength(psv);
         size_t nsv_len = matchLength(nsv);
         
         if (psv_len >= nsv_len) {
             len = psv_len;
-            pos = psv;
+            pos = static_cast<size_t>(psv);
         } else {
             len = nsv_len;
-            pos = nsv;
+            pos = static_cast<size_t>(nsv);
         }
     }
 
-    // If no match found, output literal character
     if (len == 0) {
         return std::make_pair(std::make_pair(data[i], 0), i + 1);
     }
 
-    // Ensure we advance by at least 1 position
     size_t next_i = i + std::max((size_t)1, len);
     return std::make_pair(std::make_pair(pos, len), next_i);
 }
 
-void PipelinePSVNSVProcessor::ComputeLZ77(uint8_t *data, size_t *d_psv_text, size_t *d_nsv_text, size_t n, std::string file_name) {
+template<typename SA_t>
+void PipelinePSVNSVProcessor::ComputeLZ77(const uint8_t *data, SA_t *d_psv_text, SA_t *d_nsv_text, size_t n, std::string file_name) {
     size_t i = 0;
     std::vector<std::pair<size_t, size_t>> buffer;
     
-
     while(i < n) {
-        // Use the PSV and NSV values directly for the current position i
-        size_t psv = d_psv_text[i];
-        size_t nsv = d_nsv_text[i];
+        SA_t psv = d_psv_text[i];
+        SA_t nsv = d_nsv_text[i];
         
         auto result = LZFactor(data, i, psv, nsv, n);
         size_t pos = result.first.first;
         size_t len = result.first.second;
         i = result.second;
         
-        // printf("LZ Factor at pos %zu - Ref: %zu, Len: %zu\n", i - std::max((size_t)1, len), pos, len);
         buffer.push_back(std::make_pair(pos, len));
     }
     printf("LZ77 compression successful, generated %zu factors\n", buffer.size());
@@ -360,39 +364,43 @@ void PipelinePSVNSVProcessor::ComputeLZ77(uint8_t *data, size_t *d_psv_text, siz
     out_file.close();
 }
 
-void PipelinePSVNSVProcessor::rearrangeTextOrder(const size_t* sa_array,
-                       size_t* psv, 
-                       size_t* nsv, 
+template<typename SA_t>
+void PipelinePSVNSVProcessor::rearrangeTextOrder(const SA_t* sa_array,
+                       SA_t* psv, 
+                       SA_t* nsv, 
                        const std::string& output_prefix,
                        size_t length,
-                       uint8_t* data) {
+                       const uint8_t* data) {
+    const SA_t MAX_VAL = get_max_value<SA_t>();
+    const SA_t MARK_BIT = (sizeof(SA_t) == 4) ? (1U << 31) : (1ULL << 63);
+    
     #pragma omp parallel
     {
         #pragma omp for
         for(size_t i = 0; i < length; i++) {
-            if(psv[i] != SIZE_MAX) {
-                psv[i] |= (1ULL << 63);
+            if(psv[i] != MAX_VAL) {
+                psv[i] |= MARK_BIT;
             }
-            if(nsv[i] != SIZE_MAX) {
-                nsv[i] |= (1ULL << 63);
+            if(nsv[i] != MAX_VAL) {
+                nsv[i] |= MARK_BIT;
             }
         }
 
         #pragma omp for schedule(dynamic)
         for(size_t i = 0; i < length; i++) {
 
-            if(psv[i] != SIZE_MAX && (psv[i] & (1ULL << 63))) {
+            if(psv[i] != MAX_VAL && (psv[i] & MARK_BIT)) {
                 size_t curr_pos = i;
-                size_t curr_val = psv[i] & ~(1ULL << 63);  // 
+                SA_t curr_val = psv[i] & ~MARK_BIT;
                 
                 while(true) {
                     size_t next_pos = sa_array[curr_pos];
-                    if(!(psv[next_pos] & (1ULL << 63))) {  
+                    if(!(psv[next_pos] & MARK_BIT)) {  
                         break;
                     }
                     
-                    size_t next_val = psv[next_pos] & ~(1ULL << 63);
-                    psv[next_pos] = (curr_val == (SIZE_MAX & ~(1ULL << 63))) ? SIZE_MAX : curr_val;
+                    SA_t next_val = psv[next_pos] & ~MARK_BIT;
+                    psv[next_pos] = (curr_val == (MAX_VAL & ~MARK_BIT)) ? MAX_VAL : curr_val;
                     
                     if(next_pos == i) break;
                     
@@ -401,19 +409,18 @@ void PipelinePSVNSVProcessor::rearrangeTextOrder(const size_t* sa_array,
                 }
             }
 
-            // Handle the NSV 
-            if(nsv[i] != SIZE_MAX && (nsv[i] & (1ULL << 63))) {
+            if(nsv[i] != MAX_VAL && (nsv[i] & MARK_BIT)) {
                 size_t curr_pos = i;
-                size_t curr_val = nsv[i] & ~(1ULL << 63);
+                SA_t curr_val = nsv[i] & ~MARK_BIT;
                 
                 while(true) {
                     size_t next_pos = sa_array[curr_pos];
-                    if(!(nsv[next_pos] & (1ULL << 63))) {
+                    if(!(nsv[next_pos] & MARK_BIT)) {
                         break;
                     }
                     
-                    size_t next_val = nsv[next_pos] & ~(1ULL << 63);
-                     nsv[next_pos] = (curr_val == (SIZE_MAX & ~(1ULL << 63))) ? SIZE_MAX : curr_val;
+                    SA_t next_val = nsv[next_pos] & ~MARK_BIT;
+                    nsv[next_pos] = (curr_val == (MAX_VAL & ~MARK_BIT)) ? MAX_VAL : curr_val;
                     
                     if(next_pos == i) break;
                     
@@ -425,11 +432,11 @@ void PipelinePSVNSVProcessor::rearrangeTextOrder(const size_t* sa_array,
 
         #pragma omp for schedule(static)
         for(size_t i = 0; i < length; i++) {
-            if(psv[i] != SIZE_MAX && (psv[i] & (1ULL << 63))) {
-                psv[i] &= ~(1ULL << 63);
+            if(psv[i] != MAX_VAL && (psv[i] & MARK_BIT)) {
+                psv[i] &= ~MARK_BIT;
             }
-            if(nsv[i] != SIZE_MAX && (nsv[i] & (1ULL << 63))) {
-                nsv[i] &= ~(1ULL << 63);
+            if(nsv[i] != MAX_VAL && (nsv[i] & MARK_BIT)) {
+                nsv[i] &= ~MARK_BIT;
             }
         }
     }
@@ -445,134 +452,126 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
     std::cout << "After memory calculated" << std::endl;
 }
 
-    void PipelinePSVNSVProcessor::processFullGPU(const size_t* sa_array, uint8_t* data, size_t length, const std::string& output_prefix) {
+template<typename SA_t>
+void PipelinePSVNSVProcessor::processFullGPU(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
+    profiler.start();
+
+    std::vector<SA_t> h_psv_results(length);
+    std::vector<SA_t> h_nsv_results(length);
+
+    const int block_size = DEFAULT_BLOCK_SIZE;
+    const int num_blocks = (length + block_size - 1) / block_size;
+    printf("num_blocks: %d\n", num_blocks);
+    const size_t shared_mem_size = block_size * sizeof(SA_t);
+
+    SA_t *d_input, *d_output;
+    cudaMalloc(&d_input, length * sizeof(SA_t));
+    cudaMalloc(&d_output, length * sizeof(SA_t));
+
+    cudaMemcpy(d_input, sa_array, length * sizeof(SA_t), cudaMemcpyHostToDevice);
+
+    {
+        computePSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
+            d_input, d_output, length
+        );
+
+        processPSVBoundariesKernel<<<num_blocks, block_size>>>(
+            d_output, d_input, length, block_size
+        );
+
+        cudaMemcpy(h_psv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+    }
+
+    {
+        computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
+            d_input, d_output, length
+        );
+
+        processNSVBoundariesKernel<<<num_blocks, block_size>>>(
+            d_output, d_input, length, block_size
+        );
+
+        cudaMemcpy(h_nsv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+    }
+
+    cudaFree(d_input);
+    cudaFree(d_output);
+
+    profiler.stop("Full GPU Processing");
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+        throw std::runtime_error("CUDA error occurred during GPU processing");
+    }
+    rearrangeTextOrder(sa_array, h_psv_results.data(), h_nsv_results.data(), output_prefix, length, data);
+}
+
+template<typename SA_t>
+void PipelinePSVNSVProcessor::process(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
+    try {
+        std::cout << "Available GPU memory: " << available_memory << " bytes" << std::flush << std::endl;
+        std::cout << "Input length: " << length << " bytes" << std::flush << std::endl;
+        
+        if (canProcessFullGPU(length)) {
+            std::cout << "Using full GPU processing mode" << std::flush << std::endl;
+            processFullGPU(sa_array, data, length, output_prefix);
+        } else {
+            std::cout << "Using stream processing mode" << std::flush << std::endl;
+            processWithStreams(sa_array, data, length, output_prefix);
+        }
+    } catch (const std::bad_alloc& e) {
+        std::cerr << "Memory allocation failed: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+template<typename SA_t>
+void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
+    try {
+        std::cout << "Starting stream processing..." << std::flush << std::endl;
         profiler.start();
 
-        std::vector<size_t> h_psv_results(length);
-        std::vector<size_t> h_nsv_results(length);
+        size_t max_batch_size = std::min(
+            (available_memory / (3 * sizeof(SA_t))),
+            static_cast<size_t>(256 * 1024 * 1024)
+        );
 
-        const int block_size = DEFAULT_BLOCK_SIZE;
-        const int num_blocks = (length + block_size - 1) / block_size;
-        printf("num_blocks: %d\n", num_blocks);
-        const size_t shared_mem_size = block_size * sizeof(size_t);
+        max_batch_size = (max_batch_size / DEFAULT_BLOCK_SIZE) * DEFAULT_BLOCK_SIZE;
+        size_t optimal_batch_size = std::min(length, max_batch_size);
+        size_t total_blocks = (length + optimal_batch_size - 1) / optimal_batch_size;
 
-        //allocate device memory
-        size_t *d_input, *d_output;
-        cudaMalloc(&d_input, length * sizeof(size_t));
-        cudaMalloc(&d_output, length * sizeof(size_t));
+        std::cout << "Total blocks: " << total_blocks << std::endl;
+        std::cout << "Final batch size: " << optimal_batch_size/(1024*1024) << "MB" << std::flush << std::endl;
 
-        // copy input data to device
-        cudaMemcpy(d_input, sa_array, length * sizeof(size_t), cudaMemcpyHostToDevice);
+        std::vector<SA_t> final_psv_results(length);
+        std::vector<SA_t> final_nsv_results(length);
 
-        // 
         {
-            computePSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
-                d_input, d_output, length
-            );
-
-            processPSVBoundariesKernel<<<num_blocks, block_size>>>(
-                d_output, d_input, length, block_size
-            );
-
-            cudaMemcpy(h_psv_results.data(), d_output, length * sizeof(size_t), cudaMemcpyDeviceToHost);
-        }
-
-        // 
-        {
-            computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
-                d_input, d_output, length
-            );
-
-            processNSVBoundariesKernel<<<num_blocks, block_size>>>(
-                d_output, d_input, length, block_size
-            );
-
-            cudaMemcpy(h_nsv_results.data(), d_output, length * sizeof(size_t), cudaMemcpyDeviceToHost);
-        }
-
-        cudaFree(d_input);
-        cudaFree(d_output);
-
-        profiler.stop("Full GPU Processing");
-
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
-            throw std::runtime_error("CUDA error occurred during GPU processing");
-        }
-        rearrangeTextOrder(sa_array, h_psv_results.data(), h_nsv_results.data(), output_prefix, length, data);
-    }
-
-    void PipelinePSVNSVProcessor::process(const size_t* sa_array, uint8_t* data, size_t length, const std::string& output_prefix) {
-        try {
-            std::cout << "Available GPU memory: " << available_memory << " bytes" << std::flush << std::endl;
-            std::cout << "Input length: " << length << " bytes" << std::flush << std::endl;
-            //canProcessFullGPU(length)
-            if (canProcessFullGPU(length)) {
-                std::cout << "Using full GPU processing mode" << std::flush << std::endl;
-                processFullGPU(sa_array, data, length, output_prefix);
-            } else {
-                std::cout << "Using stream processing mode" << std::flush << std::endl;
-                processWithStreams(sa_array, data, length, output_prefix);
-            }
-        } catch (const std::bad_alloc& e) {
-            std::cerr << "Memory allocation failed: " << e.what() << std::endl;
-            throw;
-        }
-    }
-
-     void PipelinePSVNSVProcessor::processWithStreams(const size_t* sa_array, uint8_t* data, size_t length, const std::string& output_prefix) {
-        try {
-            std::cout << "Starting stream processing..." << std::flush << std::endl;
-            profiler.start();
-
-            size_t max_batch_size = std::min(
-                (available_memory / (3 * sizeof(size_t))),
-                static_cast<size_t>(256 * 1024 * 1024)  // 1GB batch size
-            );
-
-
-            max_batch_size = (max_batch_size / DEFAULT_BLOCK_SIZE) * DEFAULT_BLOCK_SIZE;
-            size_t optimal_batch_size = std::min(length, max_batch_size);
-//TODO      ONLY FOR TESTING    
-            // optimal_batch_size = 8; 
-            size_t total_blocks = (length + optimal_batch_size - 1) / optimal_batch_size;
-
-
-            std::cout << "Total blocks: " << total_blocks << std::endl;
-            std::cout << "Final batch size: " << optimal_batch_size/(1024*1024) << "MB" << std::flush << std::endl;
-
-            std::vector<size_t> final_psv_results(length);
-            std::vector<size_t> final_nsv_results(length);
-
-           { 
             cudaStream_t compute_stream;
             cudaStreamCreate(&compute_stream);
 
             const int block_size = DEFAULT_BLOCK_SIZE;
-            const size_t shared_mem_size = block_size * sizeof(size_t);
+            const size_t shared_mem_size = block_size * sizeof(SA_t);
 
-            size_t* d_input, *d_psv_output, *d_nsv_output;
-            cudaMalloc(&d_input, optimal_batch_size * sizeof(size_t));
-            cudaMalloc(&d_psv_output, optimal_batch_size * sizeof(size_t));
-            cudaMalloc(&d_nsv_output, optimal_batch_size * sizeof(size_t));
+            SA_t* d_input, *d_psv_output, *d_nsv_output;
+            cudaMalloc(&d_input, optimal_batch_size * sizeof(SA_t));
+            cudaMalloc(&d_psv_output, optimal_batch_size * sizeof(SA_t));
+            cudaMalloc(&d_nsv_output, optimal_batch_size * sizeof(SA_t));
 
             size_t processed_blocks = 0;
-            for (size_t offset = 0; offset < length; offset += optimal_batch_size)
-            {
-
+            for (size_t offset = 0; offset < length; offset += optimal_batch_size) {
                 processed_blocks++;
                 float progress = (processed_blocks * 100.0f) / total_blocks;
                 std::cout << "\rGPU Processing: " << std::fixed << std::setprecision(2) 
                          << progress << "% [Block " << processed_blocks << "/" << total_blocks << "]" 
                          << std::flush;
 
-
                 size_t current_batch = std::min(optimal_batch_size, length - offset);
                 const int num_blocks = (current_batch + block_size - 1) / block_size;
 
                 cudaMemcpyAsync(d_input, sa_array + offset, 
-                            current_batch * sizeof(size_t),
+                            current_batch * sizeof(SA_t),
                             cudaMemcpyHostToDevice, 
                             compute_stream);
 
@@ -581,11 +580,11 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
                 );
 
                 cudaMemcpyAsync(&final_psv_results[offset], d_psv_output,
-                              current_batch * sizeof(size_t),
+                              current_batch * sizeof(SA_t),
                               cudaMemcpyDeviceToHost,
                               compute_stream);
                 cudaMemcpyAsync(&final_nsv_results[offset], d_nsv_output,
-                              current_batch * sizeof(size_t),
+                              current_batch * sizeof(SA_t),
                               cudaMemcpyDeviceToHost,
                               compute_stream);
 
@@ -596,10 +595,9 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
             cudaFree(d_input);
             cudaFree(d_psv_output);
             cudaFree(d_nsv_output);
-            }
-            
+        }
 
-            profiler.stop("GPU Stream Processing");
+        profiler.stop("GPU Stream Processing");
 
         profiler.start();
 
@@ -607,7 +605,6 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
         
         std::vector<std::vector<size_t>> block_psv_tasks(num_blocks);
         std::vector<std::vector<size_t>> block_nsv_tasks(num_blocks);
-        std::atomic<size_t> processed_blocks{0};
         
         #pragma omp parallel for schedule(dynamic)
         for (size_t block_idx = 0; block_idx < num_blocks; ++block_idx) {
@@ -616,7 +613,7 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
             
             if (block_idx > 0) {
                 for (size_t i = block_start; i < block_end; ++i) {
-                    if (final_psv_results[i] == SIZE_MAX) {
+                    if (is_invalid_value(final_psv_results[i])) {
                         block_psv_tasks[block_idx].push_back(i);
                     }
                 }
@@ -624,7 +621,7 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
 
             if (block_idx < num_blocks - 1) {
                 for (size_t i = block_start; i < block_end; ++i) {
-                    if (final_nsv_results[i] == SIZE_MAX) {
+                    if (is_invalid_value(final_nsv_results[i])) {
                         block_nsv_tasks[block_idx].push_back(i);
                     }
                 }
@@ -635,46 +632,36 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
         for (const auto& tasks : block_psv_tasks) total_tasks += tasks.size();
         for (const auto& tasks : block_nsv_tasks) total_tasks += tasks.size();
         
-
         std::cout << "Total merge tasks: " << total_tasks << std::endl;
         
-        if (total_tasks > 0)
-        {
+        if (total_tasks > 0) {
             cudaStream_t task_stream;
             cudaStreamCreate(&task_stream);
 
-            size_t *d_sa_array, *d_positions, *d_results;
+            SA_t *d_sa_array, *d_results;
+            size_t *d_positions;
 
-            try
-            {
-                cudaMalloc(&d_sa_array, length * sizeof(size_t));
-                cudaMemcpyAsync(d_sa_array, sa_array, length * sizeof(size_t),
+            try {
+                cudaMalloc(&d_sa_array, length * sizeof(SA_t));
+                cudaMemcpyAsync(d_sa_array, sa_array, length * sizeof(SA_t),
                        cudaMemcpyHostToDevice, task_stream);
 
                 const size_t MAX_BATCH_TASKS = 1024 * 1024;
-                // const size_t MAX_BATCH_TASKS = 4;
                 std::atomic<size_t> total_processed_tasks{0};
 
-                for (size_t block_idx = 0; block_idx < num_blocks; block_idx++)
-                {
+                // Process PSV tasks
+                for (size_t block_idx = 0; block_idx < num_blocks; block_idx++) {
                     std::vector<size_t>& tasks = block_psv_tasks[block_idx];
                     if (tasks.empty()) continue;
 
                     std::cout << "\nProcessing PSV block " << block_idx + 1 << "/" << num_blocks 
                               << " with " << tasks.size() << " tasks" << std::endl;
 
-                    for (size_t task_offset = 0; task_offset < tasks.size(); task_offset += MAX_BATCH_TASKS) 
-                    {   
+                    for (size_t task_offset = 0; task_offset < tasks.size(); task_offset += MAX_BATCH_TASKS) {   
                         size_t current_batch_size = std::min(MAX_BATCH_TASKS, tasks.size() - task_offset);
-                        float batch_progress = (task_offset + current_batch_size) * 100.0f / tasks.size();
-                        std::cout << "\rBlock progress: " << std::fixed << std::setprecision(2) 
-                                  << batch_progress << "% [Batch: " << task_offset/MAX_BATCH_TASKS + 1 
-                                  << "/" << (tasks.size() + MAX_BATCH_TASKS - 1)/MAX_BATCH_TASKS << "]" 
-                                  << std::flush;
-
                         
                         cudaMalloc(&d_positions, current_batch_size * sizeof(size_t));
-                        cudaMalloc(&d_results, current_batch_size * sizeof(size_t));
+                        cudaMalloc(&d_results, current_batch_size * sizeof(SA_t));
 
                         cudaMemcpyAsync(d_positions, tasks.data() + task_offset,
                                     current_batch_size * sizeof(size_t),
@@ -691,14 +678,14 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
                             current_batch_size, start_pos, end_pos
                         );
 
-                        std::vector<size_t> task_results(current_batch_size);
+                        std::vector<SA_t> task_results(current_batch_size);
                         cudaMemcpyAsync(task_results.data(), d_results,
-                                    current_batch_size * sizeof(size_t),
+                                    current_batch_size * sizeof(SA_t),
                                     cudaMemcpyDeviceToHost, task_stream);
                         cudaStreamSynchronize(task_stream);
 
                         for (size_t i = 0; i < current_batch_size; ++i) {
-                            if (task_results[i] != SIZE_MAX) {
+                            if (!is_invalid_value(task_results[i])) {
                                 final_psv_results[tasks[task_offset + i]] = task_results[i];
                             }
                         }
@@ -709,34 +696,22 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
                         d_results = nullptr;
 
                         total_processed_tasks += current_batch_size;
-                        float total_progress = total_processed_tasks * 100.0f / total_tasks;
-                        std::cout << " | Total: " << std::fixed << std::setprecision(2) 
-                                  << total_progress << "% [" << total_processed_tasks << "/" << total_tasks << "]" 
-                                  << std::flush;
                     }
-                    std::cout << std::endl;
                 }
 
-                std::cout << "\nPSV merge completed" << std::endl;
-
+                // Process NSV tasks
                 for (size_t block_idx = 0; block_idx < num_blocks; ++block_idx) {
                     std::vector<size_t>& tasks = block_nsv_tasks[block_idx];
                     if (tasks.empty()) continue;
 
                     std::cout << "\nProcessing NSV block " << block_idx + 1 << "/" << num_blocks 
                               << " with " << tasks.size() << " tasks" << std::endl;
-                    for (size_t task_offset = 0; task_offset < tasks.size(); task_offset += MAX_BATCH_TASKS) 
-                    {
+                              
+                    for (size_t task_offset = 0; task_offset < tasks.size(); task_offset += MAX_BATCH_TASKS) {
                         size_t current_batch_size = std::min(MAX_BATCH_TASKS, tasks.size() - task_offset);
         
-                        float batch_progress = (task_offset + current_batch_size) * 100.0f / tasks.size();
-                        std::cout << "\rBlock progress: " << std::fixed << std::setprecision(2) 
-                                  << batch_progress << "% [Batch: " << task_offset/MAX_BATCH_TASKS + 1 
-                                  << "/" << (tasks.size() + MAX_BATCH_TASKS - 1)/MAX_BATCH_TASKS << "]" 
-                                  << std::flush;
-                        
                         cudaMalloc(&d_positions, current_batch_size * sizeof(size_t));
-                        cudaMalloc(&d_results, current_batch_size * sizeof(size_t));
+                        cudaMalloc(&d_results, current_batch_size * sizeof(SA_t));
 
                         cudaMemcpyAsync(d_positions, tasks.data() + task_offset,
                                     current_batch_size * sizeof(size_t),
@@ -753,14 +728,14 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
                             current_batch_size, start_pos, end_pos
                         );
 
-                        std::vector<size_t> task_results(current_batch_size);
+                        std::vector<SA_t> task_results(current_batch_size);
                         cudaMemcpyAsync(task_results.data(), d_results,
-                                    current_batch_size * sizeof(size_t),
+                                    current_batch_size * sizeof(SA_t),
                                     cudaMemcpyDeviceToHost, task_stream);
                         cudaStreamSynchronize(task_stream);
 
                         for (size_t i = 0; i < current_batch_size; ++i) {
-                            if (task_results[i] != SIZE_MAX) {
+                            if (!is_invalid_value(task_results[i])) {
                                 final_nsv_results[tasks[task_offset + i]] = task_results[i];
                             }
                         }
@@ -771,19 +746,10 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
                         d_results = nullptr;
 
                         total_processed_tasks += current_batch_size;
-                        float total_progress = total_processed_tasks * 100.0f / total_tasks;
-                        std::cout << " | Total: " << std::fixed << std::setprecision(2) 
-                                  << total_progress << "% [" << total_processed_tasks << "/" << total_tasks << "]" 
-                                  << std::flush;
                     }
-                    std::cout << std::endl;
                 }
-
-                std::cout << "\nNSV merge completed" << std::endl;
                 
-            }
-            catch(const std::exception& e)
-            {
+            } catch(const std::exception& e) {
                 if (d_sa_array) cudaFree(d_sa_array);
                 if (d_positions) cudaFree(d_positions);
                 if (d_results) cudaFree(d_results);
@@ -798,8 +764,52 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
         profiler.stop("GPU Merge");          
 
         rearrangeTextOrder(sa_array, final_psv_results.data(), final_nsv_results.data(), output_prefix, length, data);
-        } catch (const std::exception& e) {
-            std::cerr << "Error in stream processing: " << e.what() << std::endl;
-            throw;
-        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in stream processing: " << e.what() << std::endl;
+        throw;
     }
+}
+
+// Explicit template instantiations
+template void PipelinePSVNSVProcessor::process<uint32_t>(const uint32_t*, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::process<size_t>(const size_t*, const uint8_t*, size_t, const std::string&);
+
+template void PipelinePSVNSVProcessor::processFullGPU<uint32_t>(const uint32_t*, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::processFullGPU<size_t>(const size_t*, const uint8_t*, size_t, const std::string&);
+
+template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(const uint32_t*, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::processWithStreams<size_t>(const size_t*, const uint8_t*, size_t, const std::string&);
+
+template void PipelinePSVNSVProcessor::rearrangeTextOrder<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const std::string&, size_t, const uint8_t*);
+template void PipelinePSVNSVProcessor::rearrangeTextOrder<size_t>(const size_t*, size_t*, size_t*, const std::string&, size_t, const uint8_t*);
+
+template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<uint32_t>(const uint8_t*, size_t, uint32_t, uint32_t, size_t);
+template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<size_t>(const uint8_t*, size_t, size_t, size_t, size_t);
+
+template void PipelinePSVNSVProcessor::ComputeLZ77<uint32_t>(const uint8_t*, uint32_t*, uint32_t*, size_t, std::string);
+template void PipelinePSVNSVProcessor::ComputeLZ77<size_t>(const uint8_t*, size_t*, size_t*, size_t, std::string);
+
+// Explicit kernel instantiations
+template __global__ void processPSVTasksKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t*, const size_t, const size_t, const size_t);
+template __global__ void processPSVTasksKernel<size_t>(const size_t*, size_t*, const size_t*, const size_t, const size_t, const size_t);
+
+template __global__ void processNSVTasksKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t*, const size_t, const size_t, const size_t);
+template __global__ void processNSVTasksKernel<size_t>(const size_t*, size_t*, const size_t*, const size_t, const size_t, const size_t);
+
+template __global__ void computePSVNSVKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const size_t);
+template __global__ void computePSVNSVKernel<size_t>(const size_t*, size_t*, size_t*, const size_t);
+
+template __global__ void computePSVKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t);
+template __global__ void computePSVKernel<size_t>(const size_t*, size_t*, const size_t);
+
+template __global__ void computeNSVKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t);
+template __global__ void computeNSVKernel<size_t>(const size_t*, size_t*, const size_t);
+
+template __global__ void processPSVBoundariesKernel<uint32_t>(uint32_t*, const uint32_t*, const size_t, const size_t);
+template __global__ void processPSVBoundariesKernel<size_t>(size_t*, const size_t*, const size_t, const size_t);
+
+template __global__ void processNSVBoundariesKernel<uint32_t>(uint32_t*, const uint32_t*, const size_t, const size_t);
+template __global__ void processNSVBoundariesKernel<size_t>(size_t*, const size_t*, const size_t, const size_t);
+
+template __global__ void textOrderMapping<uint32_t>(const uint32_t*, const uint32_t*, uint32_t*, size_t);
+template __global__ void textOrderMapping<size_t>(const size_t*, const size_t*, size_t*, size_t);
