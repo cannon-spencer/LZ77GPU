@@ -101,31 +101,7 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
     
     // Process with appropriate type using regular process function
     processor.template process<SA_t>(SA.data(), data.data(), length, output_prefix);
-    
-    // else {
-    //     // Use SDSL for size_t (large files)
-    //     try {
-    //         std::cout << "Using SDSL for SA construction (size_t)" << std::endl;
-    //         sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
-    //         sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
-    //         std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
-    //         std::cout << "SDSL SA construction finished (size_t)" << std::endl;
-            
-    //     } catch (const std::exception& e) {
-    //         std::cerr << "Failed to construct suffix array using SDSL: " << e.what() << std::endl;
-    //         throw;
-    //     }
-    // }
-    
-    // profiler.stop("Suffix Array Generation");
-    // std::cout << "Before processor initialized" << std::endl;
-    
-    // // Create templated processor
-    // PipelinePSVNSVProcessor processor;
-    // std::cout << "After processor initialized" << std::endl;
-    
-    // // Process with appropriate type
-    // processor.template process<SA_t>(SA.data(), data.data(), length, output_prefix);
+
 }
 
 int main(int argc, char **argv) {
