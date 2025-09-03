@@ -98,9 +98,14 @@ struct SuffixComparator {
  *   4) assign_ranks_kernel => rank[suffixIndex] = groupID
  *   5) if d_diff[n-1] == n, break early
  */
-std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& s){
+uint32_t* build_suffix_array_prefix_doubling(const std::vector<uint8_t>& s, size_t& out_length){
     size_t n = s.size();
-    if (n == 0) return {};
+    if (n == 0) {
+        out_length = 0;
+        return nullptr;
+    }
+
+    out_length = n;
 
     // Kernel config
     int blockSize = 1024; // 256
@@ -188,17 +193,14 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     // At this point, d_index is sorted suffix array
     // Copy it back to host
     auto t7 = now();
-    std::vector<uint32_t> hostIndex(n);
-    CHECK_CUDA_ERROR(cudaMemcpy(hostIndex.data(), d_index,n * sizeof(uint32_t), cudaMemcpyDeviceToHost));
     record_time(g_copy_time_ns, t7);
 
     // Clean up
     auto t8 = now();
     cudaFree(d_rank);
-    cudaFree(d_index);
     cudaFree(d_diff);
     cudaFree(d_rank_k);
     record_time(g_cleanup_time_ns, t8);
 
-    return hostIndex;
+    return d_index;
 }

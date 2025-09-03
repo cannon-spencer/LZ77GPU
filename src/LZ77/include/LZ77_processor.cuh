@@ -110,6 +110,9 @@ public:
     template<typename SA_t>
     void process(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
 
+     template<typename SA_t>
+    void processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
+
 private:
     GPUProfiler profiler;
     size_t available_memory;

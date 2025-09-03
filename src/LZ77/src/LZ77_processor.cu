@@ -453,6 +453,61 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
 }
 
 template<typename SA_t>
+void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
+    profiler.start();
+
+    std::vector<SA_t> h_psv_results(length);
+    std::vector<SA_t> h_nsv_results(length);
+
+    const int block_size = DEFAULT_BLOCK_SIZE;
+    const int num_blocks = (length + block_size - 1) / block_size;
+    printf("num_blocks: %d\n", num_blocks);
+    const size_t shared_mem_size = block_size * sizeof(SA_t);
+
+    SA_t* d_output;
+    cudaMalloc(&d_output, length * sizeof(SA_t));
+
+    {
+        computePSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
+            d_sa_array, d_output, length  
+        );
+
+        processPSVBoundariesKernel<<<num_blocks, block_size>>>(
+            d_output, d_sa_array, length, block_size  
+        );
+
+        cudaMemcpy(h_psv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+    }
+
+    {
+        computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
+            d_sa_array, d_output, length  
+        );
+
+        processNSVBoundariesKernel<<<num_blocks, block_size>>>(
+            d_output, d_sa_array, length, block_size  
+        );
+
+        cudaMemcpy(h_nsv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+    }
+
+    cudaFree(d_output);
+
+    profiler.stop("Full GPU Processing (GPU SA)");
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+        throw std::runtime_error("CUDA error occurred during GPU processing");
+    }
+
+    std::vector<SA_t> h_sa_array(length);
+    cudaMemcpy(h_sa_array.data(), d_sa_array, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+    
+    rearrangeTextOrder(h_sa_array.data(), h_psv_results.data(), h_nsv_results.data(), output_prefix, length, data);
+}
+
+template<typename SA_t>
 void PipelinePSVNSVProcessor::processFullGPU(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
     profiler.start();
 
@@ -776,6 +831,9 @@ template void PipelinePSVNSVProcessor::process<size_t>(const size_t*, const uint
 
 template void PipelinePSVNSVProcessor::processFullGPU<uint32_t>(const uint32_t*, const uint8_t*, size_t, const std::string&);
 template void PipelinePSVNSVProcessor::processFullGPU<size_t>(const size_t*, const uint8_t*, size_t, const std::string&);
+
+template void PipelinePSVNSVProcessor::processFullGPUWithGPUSA<uint32_t>(uint32_t*, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::processFullGPUWithGPUSA<size_t>(size_t*, const uint8_t*, size_t, const std::string&);
 
 template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(const uint32_t*, const uint8_t*, size_t, const std::string&);
 template void PipelinePSVNSVProcessor::processWithStreams<size_t>(const size_t*, const uint8_t*, size_t, const std::string&);

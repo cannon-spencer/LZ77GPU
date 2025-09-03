@@ -135,7 +135,8 @@ int main(int argc, char** argv){
 
     prefix_monitor.start();
     auto start = std::chrono::high_resolution_clock::now();
-    std::vector<uint32_t> SA_pd = build_suffix_array_prefix_doubling(s);
+    size_t sa_length;
+    uint32_t* d_SA_pd = build_suffix_array_prefix_doubling(s, sa_length);
     auto stop = std::chrono::high_resolution_clock::now();
     prefix_monitor.stop();
 
@@ -180,6 +181,17 @@ int main(int argc, char** argv){
      * */
 
     // Compare results
+    std::vector<uint32_t> SA_pd(n);
+    cudaError_t cuda_err = cudaMemcpy(SA_pd.data(), d_SA_pd, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess) {
+        std::cerr << "Failed to copy SA from GPU to host: " << cudaGetErrorString(cuda_err) << std::endl;
+        cudaFree(d_SA_pd);
+        return 1;
+    }
+
+    // Clean up GPU memory after copying to host
+    cudaFree(d_SA_pd);
+    
     bool match = compare_SA(SA_pd, SA_cubwt);
     //match = match && compare_SA(SA_cubwt, SA_sdsl);
     std::cout << "Checking if both methods produce the same SA...\n";
