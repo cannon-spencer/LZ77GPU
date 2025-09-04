@@ -6,7 +6,7 @@ project(LZ77GPU LANGUAGES C CXX CUDA)
 
 # Add the cmake build type
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

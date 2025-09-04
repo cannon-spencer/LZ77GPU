@@ -70,16 +70,16 @@ __global__ void computeNSVKernel(
 
 template<typename SA_t>
 __global__ void processPSVBoundariesKernel(
-    SA_t* __restrict__ psv_output,
-    const SA_t* __restrict__ input,
+    const SA_t* __restrict__ sa_array,     
+    SA_t* __restrict__ psv_text_order,   
     const size_t length,
     const size_t block_size
 );
 
 template<typename SA_t>
 __global__ void processNSVBoundariesKernel(
-    SA_t* __restrict__ nsv_output,
-    const SA_t* __restrict__ input,
+    const SA_t* __restrict__ sa_array,
+    SA_t* __restrict__ nsv_text_order,
     const size_t length,
     const size_t block_size
 );
@@ -134,6 +134,9 @@ private:
     template<typename SA_t>
     void rearrangeTextOrder(const SA_t* sa_array, SA_t* psv, SA_t* nsv,
                             const std::string& output_prefix, size_t length, const uint8_t* data);
+    
+    template<typename SA_t>
+    void convertPSVNSVToTextOrderGPU(SA_t* d_sa_array, SA_t* d_psv_array, SA_t* d_nsv_array, size_t length);
 
     template<typename SA_t>
     std::pair<std::pair<size_t, size_t>, size_t> LZFactor(const uint8_t *data, size_t i, SA_t psv, SA_t nsv, size_t n);

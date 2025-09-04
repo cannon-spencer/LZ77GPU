@@ -137,7 +137,7 @@ __global__ void computePSVNSVKernel(
 }
 
 template<typename SA_t>
-__global__ void computePSVKernel(const SA_t* __restrict__ input,
+__global__ void computePSVKernel(const SA_t* __restrict__ sa_array,
                                SA_t* __restrict__ psv_output,
                                const size_t length) {
     extern __shared__ uint8_t shared_mem[];
@@ -149,11 +149,7 @@ __global__ void computePSVKernel(const SA_t* __restrict__ input,
     const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        psv_output[gid] = MAX_VAL;
-    }
-
-    if (gid < length) {
-        shared_data[tid] = input[gid];
+        shared_data[tid] = sa_array[gid];
     } else {
         shared_data[tid] = MAX_VAL;
     }
@@ -161,18 +157,24 @@ __global__ void computePSVKernel(const SA_t* __restrict__ input,
 
     if (gid < length) {
         SA_t current = shared_data[tid];
+        SA_t psv_val = MAX_VAL;
 
         for (int i = tid - 1; i >= 0; --i) {
             if (shared_data[i] < current) {
-                psv_output[gid] = shared_data[i];
+                psv_val = shared_data[i];
                 break;
             }
+        }
+
+        SA_t text_pos = sa_array[gid];
+        if (text_pos < length) {
+            psv_output[text_pos] = psv_val; 
         }
     }
 }
 
 template<typename SA_t>
-__global__ void computeNSVKernel(const SA_t* __restrict__ input,
+__global__ void computeNSVKernel(const SA_t* __restrict__ sa_array,
                                SA_t* __restrict__ nsv_output,
                                const size_t length) {
     extern __shared__ uint8_t shared_mem[];
@@ -184,11 +186,7 @@ __global__ void computeNSVKernel(const SA_t* __restrict__ input,
     const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        nsv_output[gid] = MAX_VAL;
-    }
-
-    if (gid < length) {
-        shared_data[tid] = input[gid];
+        shared_data[tid] = sa_array[gid];
     } else {
         shared_data[tid] = MAX_VAL;
     }
@@ -196,61 +194,76 @@ __global__ void computeNSVKernel(const SA_t* __restrict__ input,
 
     if (gid < length) {
         SA_t current = shared_data[tid];
+        SA_t nsv_val = MAX_VAL;
 
         for (int i = tid + 1; i < blockDim.x && i < length; ++i) {
             if (shared_data[i] < current) {
-                nsv_output[gid] = shared_data[i];
+                nsv_val = shared_data[i];
                 break;
             }
+        }
+
+        SA_t text_pos = sa_array[gid];
+        if (text_pos < length) {
+            nsv_output[text_pos] = nsv_val;
         }
     }
 }
 
 template<typename SA_t>
 __global__ void processPSVBoundariesKernel(
-        SA_t* __restrict__ psv_output,
-        const SA_t* __restrict__ input,
-        const size_t length,
-        const size_t block_size) {
+    const SA_t* __restrict__ sa_array,     
+    SA_t* __restrict__ psv_text_order,   
+    const size_t length,
+    const size_t block_size) {
+
     const int gid = blockIdx.x * blockDim.x + threadIdx.x;
     const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        SA_t current = input[gid];
-        const int current_block = gid / block_size;
+        SA_t text_pos = sa_array[gid];
+        if(text_pos < length && psv_text_order[text_pos] == MAX_VAL) {
+            SA_t current = sa_array[gid];
+            const int current_block = gid / block_size;
 
-        if (current_block > 0 && psv_output[gid] == MAX_VAL) {
-            size_t block_start = (gid / block_size) * block_size;
-            for (size_t i = block_start - 1; i != (size_t)-1; --i) {
-                if (input[i] < current) {
-                    psv_output[gid] = input[i];
-                    break;
+            if (current_block > 0) {
+                size_t block_start = (gid / block_size) * block_size;
+                for (size_t i = block_start - 1; i != (size_t)-1; --i) {
+                    if (sa_array[i] < current) {
+                        psv_text_order[text_pos] = sa_array[i]; 
+                        break;
+                    }
                 }
             }
         }
+        
     }
 }
 
 template<typename SA_t>
 __global__ void processNSVBoundariesKernel(
-        SA_t* __restrict__ nsv_output,
-        const SA_t* __restrict__ input,
+        const SA_t* __restrict__ sa_array,
+        SA_t* __restrict__ nsv_text_order,
         const size_t length,
         const size_t block_size) {
+
     const int gid = blockIdx.x * blockDim.x + threadIdx.x;
     const SA_t MAX_VAL = get_max_value<SA_t>();
 
     if (gid < length) {
-        SA_t current = input[gid];
-        const int total_blocks = (length + block_size - 1) / block_size;
-        const int current_block = gid / block_size;
+        SA_t text_pos = sa_array[gid];
+        if (text_pos < length && nsv_text_order[text_pos] == MAX_VAL) {
+            SA_t current = sa_array[gid];
+            const int total_blocks = (length + block_size - 1) / block_size;
+            const int current_block = gid / block_size;
 
-        if (current_block < total_blocks - 1 && nsv_output[gid] == MAX_VAL) {
-            size_t block_end = ((gid / block_size) + 1) * block_size;
-            for (size_t i = block_end; i < length; ++i) {
-                if (input[i] < current) {
-                    nsv_output[gid] = input[i];
-                    break;
+            if (current_block < total_blocks - 1) {
+                size_t block_end = ((gid / block_size) + 1) * block_size;
+                for (size_t i = block_end; i < length; ++i) {
+                    if (sa_array[i] < current) {
+                        nsv_text_order[text_pos] = sa_array[i];
+                        break;
+                    }
                 }
             }
         }
@@ -456,44 +469,42 @@ template<typename SA_t>
 void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
     profiler.start();
 
-    std::vector<SA_t> h_psv_results(length);
-    std::vector<SA_t> h_nsv_results(length);
-
     const int block_size = DEFAULT_BLOCK_SIZE;
     const int num_blocks = (length + block_size - 1) / block_size;
-    printf("num_blocks: %d\n", num_blocks);
     const size_t shared_mem_size = block_size * sizeof(SA_t);
 
-    SA_t* d_output;
-    cudaMalloc(&d_output, length * sizeof(SA_t));
+    SA_t *d_work_array;
+    cudaMalloc(&d_work_array, length * sizeof(SA_t));
 
+    std::vector<SA_t> h_psv_text_order(length);
+    std::vector<SA_t> h_nsv_text_order(length);
     {
         computePSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
-            d_sa_array, d_output, length  
+            d_sa_array, d_work_array, length  
         );
 
         processPSVBoundariesKernel<<<num_blocks, block_size>>>(
-            d_output, d_sa_array, length, block_size  
+            d_sa_array, d_work_array, length, block_size 
         );
 
-        cudaMemcpy(h_psv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_psv_text_order.data(), d_work_array, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
     }
 
     {
-        computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
-            d_sa_array, d_output, length  
+       computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
+            d_sa_array, d_work_array, length 
         );
 
         processNSVBoundariesKernel<<<num_blocks, block_size>>>(
-            d_output, d_sa_array, length, block_size  
+            d_sa_array, d_work_array, length, block_size
         );
 
-        cudaMemcpy(h_nsv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_nsv_text_order.data(), d_work_array, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
     }
 
-    cudaFree(d_output);
+    cudaFree(d_work_array);
 
-    profiler.stop("Full GPU Processing (GPU SA)");
+    profiler.stop("Full GPU Processing (Single Work Array)");
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -501,10 +512,10 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
         throw std::runtime_error("CUDA error occurred during GPU processing");
     }
 
-    std::vector<SA_t> h_sa_array(length);
-    cudaMemcpy(h_sa_array.data(), d_sa_array, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
-    
-    rearrangeTextOrder(h_sa_array.data(), h_psv_results.data(), h_nsv_results.data(), output_prefix, length, data);
+    profiler.start();
+    std::string lz_output = output_prefix + "_lz77.bin";
+    ComputeLZ77(data, h_psv_text_order.data(), h_nsv_text_order.data(), length - 1, lz_output);
+    profiler.stop("LZ77 Processing");
 }
 
 template<typename SA_t>
@@ -531,7 +542,7 @@ void PipelinePSVNSVProcessor::processFullGPU(const SA_t* sa_array, const uint8_t
         );
 
         processPSVBoundariesKernel<<<num_blocks, block_size>>>(
-            d_output, d_input, length, block_size
+            d_input, d_output, length, block_size
         );
 
         cudaMemcpy(h_psv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
@@ -543,7 +554,7 @@ void PipelinePSVNSVProcessor::processFullGPU(const SA_t* sa_array, const uint8_t
         );
 
         processNSVBoundariesKernel<<<num_blocks, block_size>>>(
-            d_output, d_input, length, block_size
+           d_input, d_output, length, block_size
         );
 
         cudaMemcpy(h_nsv_results.data(), d_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
@@ -559,7 +570,7 @@ void PipelinePSVNSVProcessor::processFullGPU(const SA_t* sa_array, const uint8_t
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         throw std::runtime_error("CUDA error occurred during GPU processing");
     }
-    rearrangeTextOrder(sa_array, h_psv_results.data(), h_nsv_results.data(), output_prefix, length, data);
+    // rearrangeTextOrder(sa_array, h_psv_results.data(), h_nsv_results.data(), output_prefix, length, data);
 }
 
 template<typename SA_t>
@@ -863,11 +874,11 @@ template __global__ void computePSVKernel<size_t>(const size_t*, size_t*, const 
 template __global__ void computeNSVKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t);
 template __global__ void computeNSVKernel<size_t>(const size_t*, size_t*, const size_t);
 
-template __global__ void processPSVBoundariesKernel<uint32_t>(uint32_t*, const uint32_t*, const size_t, const size_t);
-template __global__ void processPSVBoundariesKernel<size_t>(size_t*, const size_t*, const size_t, const size_t);
+template __global__ void processPSVBoundariesKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t, const size_t);
+template __global__ void processPSVBoundariesKernel<size_t>(const size_t*, size_t*, const size_t, const size_t);
 
-template __global__ void processNSVBoundariesKernel<uint32_t>(uint32_t*, const uint32_t*, const size_t, const size_t);
-template __global__ void processNSVBoundariesKernel<size_t>(size_t*, const size_t*, const size_t, const size_t);
+template __global__ void processNSVBoundariesKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t, const size_t);
+template __global__ void processNSVBoundariesKernel<size_t>(const size_t*, size_t*, const size_t, const size_t);
 
 template __global__ void textOrderMapping<uint32_t>(const uint32_t*, const uint32_t*, uint32_t*, size_t);
 template __global__ void textOrderMapping<size_t>(const size_t*, const size_t*, size_t*, size_t);
