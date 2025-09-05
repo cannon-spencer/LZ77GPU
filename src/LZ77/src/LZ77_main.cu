@@ -37,7 +37,6 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
                 
                 try {
                     // Use GPU SA directly for full GPU processing (zero-copy optimization)
-                    std::cout << "Using full GPU processing with GPU SA (zero-copy)" << std::endl;
                     processor.template processFullGPUWithGPUSA<uint32_t>(d_SA, data.data(), length, output_prefix);
                 } catch (...) {
                     // Ensure GPU memory cleanup on exception

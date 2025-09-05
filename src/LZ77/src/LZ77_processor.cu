@@ -218,24 +218,21 @@ __global__ void processPSVBoundariesKernel(
     const size_t block_size) {
 
     const int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= length) return; 
+
     const SA_t MAX_VAL = get_max_value<SA_t>();
+    SA_t text_pos = sa_array[gid];
+    const int current_block = gid / block_size;
 
-    if (gid < length) {
-        SA_t text_pos = sa_array[gid];
-        if(text_pos < length && psv_text_order[text_pos] == MAX_VAL) {
-            SA_t current = sa_array[gid];
-            const int current_block = gid / block_size;
-
-            if (current_block > 0) {
-                size_t block_start = (gid / block_size) * block_size;
-                for (size_t i = block_start - 1; i != (size_t)-1; --i) {
-                    if (sa_array[i] < current) {
-                        psv_text_order[text_pos] = sa_array[i]; 
-                        break;
-                    }
+    if(text_pos < length && psv_text_order[text_pos] == MAX_VAL && current_block > 0) {
+        const SA_t current = sa_array[gid];
+        size_t block_start = current_block * block_size;
+        for (size_t i = block_start - 1; i != (size_t)-1; --i) {
+            if (sa_array[i] < current) {
+                psv_text_order[text_pos] = sa_array[i];
+                return;
                 }
             }
-        }
         
     }
 }
@@ -248,26 +245,29 @@ __global__ void processNSVBoundariesKernel(
         const size_t block_size) {
 
     const int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= length) return;
+
     const SA_t MAX_VAL = get_max_value<SA_t>();
+    const SA_t text_pos = sa_array[gid];  
+    const SA_t current = sa_array[gid];   
+    const int current_block = gid / block_size;
+    const int total_blocks = (length + block_size - 1) / block_size;
 
-    if (gid < length) {
-        SA_t text_pos = sa_array[gid];
-        if (text_pos < length && nsv_text_order[text_pos] == MAX_VAL) {
-            SA_t current = sa_array[gid];
-            const int total_blocks = (length + block_size - 1) / block_size;
-            const int current_block = gid / block_size;
 
-            if (current_block < total_blocks - 1) {
-                size_t block_end = ((gid / block_size) + 1) * block_size;
-                for (size_t i = block_end; i < length; ++i) {
-                    if (sa_array[i] < current) {
-                        nsv_text_order[text_pos] = sa_array[i];
-                        break;
-                    }
-                }
+    if (text_pos < length && 
+        nsv_text_order[text_pos] == MAX_VAL && 
+        current_block < total_blocks - 1) {
+        
+        const size_t block_end = (current_block + 1) * block_size;
+        
+        for (size_t i = block_end; i < length; ++i) {
+            if (sa_array[i] < current) {
+                nsv_text_order[text_pos] = sa_array[i];
+                return; 
             }
         }
     }
+
 }
 
 template<typename SA_t>
@@ -367,7 +367,6 @@ void PipelinePSVNSVProcessor::ComputeLZ77(const uint8_t *data, SA_t *d_psv_text,
         
         buffer.push_back(std::make_pair(pos, len));
     }
-    printf("LZ77 compression successful, generated %zu factors\n", buffer.size());
 
     std::ofstream out_file(file_name, std::ios::binary);
     for (const auto &lz : buffer) {
@@ -462,7 +461,6 @@ void PipelinePSVNSVProcessor::rearrangeTextOrder(const SA_t* sa_array,
 
 PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
     calculateAvailableMemory();
-    std::cout << "After memory calculated" << std::endl;
 }
 
 template<typename SA_t>
@@ -479,6 +477,7 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     std::vector<SA_t> h_psv_text_order(length);
     std::vector<SA_t> h_nsv_text_order(length);
     {
+        cudaMemset(d_work_array, 0xFF, length * sizeof(SA_t)); 
         computePSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
             d_sa_array, d_work_array, length  
         );
@@ -491,6 +490,7 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     }
 
     {
+        cudaMemset(d_work_array, 0xFF, length * sizeof(SA_t)); 
         computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
             d_sa_array, d_work_array, length 
         );
