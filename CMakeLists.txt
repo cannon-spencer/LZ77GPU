@@ -74,13 +74,20 @@ set(BUILD_SHARED_LIBS  OFF CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES     OFF CACHE BOOL "" FORCE)
 set(BUILD_DIVSUFSORT64 ON  CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(divsufsort)
-set(DIVSUFSORT_INCLUDE_DIR ${divsufsort_SOURCE_DIR}/include)
+set(DIVSUFSORT_INCLUDE_DIR ${divsufsort_BINARY_DIR}/include)
+
+set(LIBDIVSUFSORT_FOUND TRUE CACHE BOOL "" FORCE)
+set(LIBDIVSUFSORT_INCLUDE_DIR "${DIVSUFSORT_INCLUDE_DIR}" CACHE PATH "" FORCE)
+set(LIBDIVSUFSORT_LIBRARY "divsufsort" CACHE STRING "" FORCE)
+
 
 # ── SDSL ─────────────────────────────────────────────────────────────────────
 FetchContent_Declare(sdsl
-        GIT_REPOSITORY https://github.com/simongog/sdsl-lite.git)
+        GIT_REPOSITORY https://github.com/simongog/sdsl-lite.git
+        GIT_TAG        v2.1.1 # Use a stable release
+        )
 set(GENERATE_DOC OFF CACHE BOOL "" FORCE)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${divsufsort_SOURCE_DIR}/include")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${divsufsort_BINARY_DIR}/include")
 FetchContent_MakeAvailable(sdsl)
 target_include_directories(sdsl INTERFACE ${DIVSUFSORT_INCLUDE_DIR})
 

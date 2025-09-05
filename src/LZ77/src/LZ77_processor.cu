@@ -491,7 +491,7 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     }
 
     {
-       computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
+        computeNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
             d_sa_array, d_work_array, length 
         );
 

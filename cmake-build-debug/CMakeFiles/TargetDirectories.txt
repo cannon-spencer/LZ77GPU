@@ -1,3 +1,0 @@
-C:/Users/chill/CLionProjects/Research/LZ_new/cmake-build-debug/CMakeFiles/LZ_new.dir
-C:/Users/chill/CLionProjects/Research/LZ_new/cmake-build-debug/CMakeFiles/edit_cache.dir
-C:/Users/chill/CLionProjects/Research/LZ_new/cmake-build-debug/CMakeFiles/rebuild_cache.dir
