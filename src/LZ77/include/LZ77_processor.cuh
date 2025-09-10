@@ -55,41 +55,20 @@ __global__ void computePSVNSVKernel(
 );
 
 template<typename SA_t>
-__global__ void computePSVKernel(
+__global__ void computePSVNSVKernelTextOrder(
     const SA_t* __restrict__ input,
     SA_t* __restrict__ psv_output,
-    const size_t length
-);
-
-template<typename SA_t>
-__global__ void computeNSVKernel(
-    const SA_t* __restrict__ input,
     SA_t* __restrict__ nsv_output,
     const size_t length
 );
 
 template<typename SA_t>
-__global__ void processPSVBoundariesKernel(
-    const SA_t* __restrict__ sa_array,     
-    SA_t* __restrict__ psv_text_order,   
-    const size_t length,
-    const size_t block_size
-);
-
-template<typename SA_t>
-__global__ void processNSVBoundariesKernel(
+__global__ void processPSVNSVBoundariesKernel(
     const SA_t* __restrict__ sa_array,
+    SA_t* __restrict__ psv_text_order,
     SA_t* __restrict__ nsv_text_order,
     const size_t length,
     const size_t block_size
-);
-
-template<typename SA_t>
-__global__ void textOrderMapping(
-    const SA_t* sa_array,
-    const SA_t* input,
-    SA_t* output,
-    size_t length
 );
 
 class GPUProfiler {
