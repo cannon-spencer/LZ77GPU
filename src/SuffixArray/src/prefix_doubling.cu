@@ -9,6 +9,9 @@
 #include <thrust/scan.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/tuple.h>
+#include <thrust/transform.h>
+#include <thrust/sequence.h>
+#include <thrust/iterator/counting_iterator.h>
 
 #include "cuda_utils.cuh"
 #include "profiler.cuh"
@@ -26,7 +29,7 @@ __global__
 void initialize_rank_and_index(const uint8_t* s, uint32_t* d_rank, uint32_t* d_index, size_t n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
-        d_rank[i] = static_cast<uint32_t>(s[i]);
+        d_rank[i] = static_cast<uint32_t>(s[i]) + 1;
         d_index[i] = i;
     }
 }
@@ -38,28 +41,13 @@ void initialize_rank_and_index(const uint8_t* s, uint32_t* d_rank, uint32_t* d_i
  * The first suffix i=0 is always a new group => diff[0] = 1.
  */
 __global__
-void compute_diff_kernel(const uint32_t* d_index, const uint32_t* d_rank, size_t n, size_t k, uint32_t* d_diff){
+void compute_diff_from_keys(const uint64_t* keys, uint32_t* diff, size_t n) {
     uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
-        if (i == 0) {
-            d_diff[0] = 1; // first always starts a new group
-        } else {
-            // previous suffix index
-            uint32_t prev = d_index[i - 1];
-            // current suffix index
-            uint32_t curr = d_index[i];
-
-            // Compare (rank[prev], rank[prev+k]) vs (rank[curr], rank[curr+k])
-            uint32_t r1_prev = d_rank[prev];
-            uint32_t r2_prev = ((prev + k) < n) ? d_rank[prev + k] : 0;
-            uint32_t r1_curr = d_rank[curr];
-            uint32_t r2_curr = ((curr + k) < n) ? d_rank[curr + k] : 0;
-
-            bool diff = (r1_curr != r1_prev) || (r2_curr != r2_prev);
-            d_diff[i] = diff ? 1 : 0;
-        }
+        diff[i] = (i == 0) ? 1u : (keys[i] != keys[i - 1]);
     }
 }
+
 
 /**
  * Kernel to assign new ranks from the inclusive-scan "group ID" (d_diff).
@@ -76,33 +64,6 @@ void assign_ranks_kernel(const uint32_t* d_index, const uint32_t* d_diff, uint32
 }
 
 
-
-/**
- * Custom comparator functor for suffix indices. Replaces "SuffixKey" usage.
- * Compare (i, j) by (rank[i], rank[i+k]) vs. (rank[j], rank[j+k]).
- */
-struct SuffixComparator {
-    const uint32_t* d_rank; // Device pointer to current rank array
-    size_t k;               // offset
-    size_t n;               // total length
-
-    __host__ __device__
-    SuffixComparator(const uint32_t* rank_, size_t k_, size_t n_)
-            : d_rank(rank_), k(k_), n(n_) {}
-
-    __device__
-    bool operator()(uint32_t i, uint32_t j) const {
-        uint32_t r1i = d_rank[i];
-        uint32_t r1j = d_rank[j];
-        if (r1i != r1j) return r1i < r1j;
-
-        uint32_t r2i = (i + k < n) ? d_rank[i + k] : 0;
-        uint32_t r2j = (j + k < n) ? d_rank[j + k] : 0;
-        return r2i < r2j;
-    }
-};
-
-
 /**
  * Build suffix array with prefix doubling, no SuffixKey array.
  * We'll store:
@@ -117,23 +78,27 @@ struct SuffixComparator {
  *   4) assign_ranks_kernel => rank[suffixIndex] = groupID
  *   5) if d_diff[n-1] == n, break early
  */
+
+// todo: make this return a device pointer so we can utilize it without pulling it off of the GPU
 std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& s){
     size_t n = s.size();
     if (n == 0) return {};
 
     // Kernel config
-    int blockSize = 1024; // 256
+    int blockSize = 1024;
     int gridSize  = static_cast<int>((n + blockSize - 1) / blockSize);
 
     // Allocate device arrays
-    uint32_t* d_rank = nullptr;
+    uint64_t* d_keys  = nullptr;
+    uint32_t* d_rank  = nullptr;
     uint32_t* d_index = nullptr;
-    uint32_t* d_diff = nullptr;
-    uint32_t* d_rank_k = nullptr;
+    uint32_t* d_diff  = nullptr;
 
     auto t0 = now();
     myCudaMalloc(&d_rank,  n * sizeof(uint32_t), "d_rank");
     myCudaMalloc(&d_index, n * sizeof(uint32_t), "d_index");
+    myCudaMalloc(&d_diff,  n * sizeof(uint32_t), "d_diff");
+    myCudaMalloc(&d_keys,  n * sizeof(uint64_t), "d_keys");
 
     // Upload input s[] to GPU
     uint8_t* d_s = nullptr;
@@ -145,30 +110,43 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     cudaFree(d_s);
 
-    // Allocate diff after freeing input array
-    myCudaMalloc(&d_diff,  n * sizeof(uint32_t), "d_diff");
-    myCudaMalloc(&d_rank_k,  n * sizeof(uint32_t), "d_rank_k");
-
-
     std::cout << "Total GPU Memory Allocated: " << g_allocated / (1024.0 * 1024.0) << " MB\n";
     record_time(g_alloc_time_ns, t0);
 
 
     // Prefix doubling
     for (size_t k = 1; k < n; k <<= 1) {
-        // 1) Sort d_index by (rank[i], rank[i+k])
+        // 1) Build packed keys = (R[i], R[i+k]) and values = index, then radix sort_by_key
         {
-            // Create comparator on the fly
-            auto t2 = now();
-            SuffixComparator cmp(d_rank, k, n);
-            thrust::device_ptr <uint32_t> d_index_ptr = thrust::device_pointer_cast(d_index);
-            thrust::sort(thrust::device, d_index_ptr, d_index_ptr + n, cmp);
-            record_time(g_sort_time_ns, t2);
+            auto t1 = now();
+
+            // define a range of sequential values
+            thrust::counting_iterator<uint32_t> I(0);
+
+            // pointers to key/value pairs
+            auto d_keys_ptr  = thrust::device_pointer_cast(d_keys);
+            auto d_index_ptr = thrust::device_pointer_cast(d_index);
+
+            // Build keys with a transform – recompute every round from current ranks and k
+            thrust::transform(
+                I, I + n, d_keys_ptr,
+                [R = d_rank, n, k] __device__ (uint32_t i) {
+                        uint32_t a = R[i];
+                        uint32_t b = (i + k < n) ? R[i + k] : 0u;
+                        return (uint64_t(a) << 32) | uint64_t(b);
+                });
+
+            // sequence index values from 0...n on init run
+            if (k == 1) thrust::sequence(d_index_ptr, d_index_ptr + n, 0);
+
+            // Radix sort keys - d_index follows sort operations
+            thrust::sort_by_key(d_keys_ptr, d_keys_ptr + n, d_index_ptr);
+            record_time(g_sort_time_ns, t1);
         }
 
-        // 2) compute diff array
+        // 2) compute head-flags (diff) directly from sorted keys
         auto t3 = now();
-        compute_diff_kernel<<<gridSize, blockSize>>>(d_index, d_rank, n, k, d_diff);
+        compute_diff_from_keys<<<gridSize, blockSize>>>(d_keys, d_diff, n);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         record_time(g_kernel_diff_time_ns, t3);
 
@@ -211,7 +189,7 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     cudaFree(d_rank);
     cudaFree(d_index);
     cudaFree(d_diff);
-    cudaFree(d_rank_k);
+    cudaFree(d_keys);
     record_time(g_cleanup_time_ns, t8);
 
     return hostIndex;

@@ -189,8 +189,8 @@ int main(int argc, char** argv){
         std::cout << "ERROR: The suffix arrays do NOT match.\n";
 
         // debug print the arrays
-        dump_sa(SA_pd,    "Prefix-doubling SA", SA_pd.size());
-        dump_sa(SA_cubwt, "libcubwt SA",        SA_cubwt.size());
+        //dump_sa(SA_pd,    "Prefix-doubling SA", SA_pd.size());
+        //dump_sa(SA_cubwt, "libcubwt SA",        SA_cubwt.size());
     }
 
     return 0;
