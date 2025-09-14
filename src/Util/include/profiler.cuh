@@ -10,6 +10,8 @@ inline uint64_t g_scan_time_ns;          // inclusive_scan
 inline uint64_t g_assign_time_ns;        // assign_ranks kernel
 inline uint64_t g_copy_chk_time_ns;      // copy back max rank (termination check)
 inline uint64_t g_cleanup_time_ns;       // frees
+inline uint64_t g_copy_back_time_ns;     // final SA copy D2H
+
 
 inline auto now() {
     return std::chrono::high_resolution_clock::now();

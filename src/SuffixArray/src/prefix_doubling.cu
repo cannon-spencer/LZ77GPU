@@ -105,7 +105,7 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
     cudaFree(d_s);
 
     std::cout << "Total GPU Memory Allocated: " << g_allocated / (1024.0 * 1024.0) << " MB\n";
-    record_time(g_alloc_time_ns, t0);
+    record_time(g_init_time_ns, t0);
 
 
     // Prefix doubling
@@ -155,7 +155,7 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
         auto t5 = now();
         assign_ranks_kernel<<<gridSize, blockSize>>>(d_index, d_diff, d_rank, n);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        record_time(g_kernel_assign_time_ns, t5);
+        record_time(g_assign_time_ns, t5);
 
 
         // 5) check if all ranks are distinct => if d_diff[n-1] == n
@@ -185,7 +185,7 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
 // Public wrapper: Returns the host Suffix Array
 std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& s)
 {
-    auto t7 = now();
+    auto t0 = now();
     std::vector<uint32_t> host_sa;
     if (s.empty()) return host_sa;
 
@@ -195,7 +195,7 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     CHECK_CUDA_ERROR(cudaMemcpy(host_sa.data(), d_sa, s.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost));
     cudaFree(d_sa);
 
-    record_time(g_copy_time_ns, t7);
+    record_time(g_copy_back_time_ns, t0);
 
     return host_sa;
 }

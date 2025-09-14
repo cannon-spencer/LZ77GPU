@@ -23,6 +23,20 @@ macro(group_sources BASE_DIR)
     endif()
 endmacro()
 
+# Helper to enable device lambdas on a target
+function(enable_cuda_lambdas tgt)
+    if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.0)
+        target_compile_options(${tgt} PRIVATE
+                $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+    else()
+        target_compile_options(${tgt} PRIVATE
+                $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
+    endif()
+endfunction()
+
+enable_cuda_lambdas(suffix_array)
+
+
 ###############################################################################
 #  Source lists
 ###############################################################################

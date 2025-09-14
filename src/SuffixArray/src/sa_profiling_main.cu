@@ -23,6 +23,7 @@ void print_profiling_summary() {
     std::cout << "Assign ranks kernel:         " << g_assign_time_ns     / 1e6 << " ms\n";
     std::cout << "Termination check memcpy:    " << g_copy_chk_time_ns   / 1e6 << " ms\n";
     std::cout << "Cleanup:                     " << g_cleanup_time_ns    / 1e6 << " ms\n";
+    std::cout << "Final SA copy (D2H):         " << g_copy_back_time_ns  / 1e6 << " ms\n";
     std::cout << "===================================\n";
 }
 

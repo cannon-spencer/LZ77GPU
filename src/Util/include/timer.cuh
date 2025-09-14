@@ -13,8 +13,6 @@ private:
 public:
     Timer(const std::string& label);
     ~Timer();
-
 };
-
 
 #endif //LIBCUBWT_TIMER_CUH
