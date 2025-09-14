@@ -14,16 +14,18 @@
 #include "prefix_doubling.cuh"
 
 void print_profiling_summary() {
-    std::cout << "==== Profiling Summary ====\n";
-    std::cout << "Initialization time:      " << g_alloc_time_ns / 1e6 << " ms\n";
-    std::cout << "Total Sort time:          " << g_sort_time_ns / 1e6 << " ms\n";
-    std::cout << "Compute Diff Kernel time: " << g_kernel_diff_time_ns / 1e6 << " ms\n";
-    std::cout << "Inclusive Scan time:      " << g_scan_time_ns / 1e6 << " ms\n";
-    std::cout << "Assign Ranks Kernel time: " << g_kernel_assign_time_ns / 1e6 << " ms\n";
-    std::cout << "Max Rank Host Copy time:  " << g_copy_time_ns / 1e6 << " ms\n";
-    std::cout << "Deallocation time:        " << g_cleanup_time_ns / 1e6 << " ms\n";
-    std::cout << "===========================\n";
+    std::cout << "==== Prefix Doubling Profiling ====\n";
+    std::cout << "Init (H2D + seed ranks/idx): " << g_init_time_ns       / 1e6 << " ms\n";
+    std::cout << "Build keys (transform):      " << g_build_keys_time_ns / 1e6 << " ms\n";
+    std::cout << "Radix sort_by_key:           " << g_sort_time_ns       / 1e6 << " ms\n";
+    std::cout << "Head-flags (diff) kernel:    " << g_diff_time_ns       / 1e6 << " ms\n";
+    std::cout << "Inclusive scan:              " << g_scan_time_ns       / 1e6 << " ms\n";
+    std::cout << "Assign ranks kernel:         " << g_assign_time_ns     / 1e6 << " ms\n";
+    std::cout << "Termination check memcpy:    " << g_copy_chk_time_ns   / 1e6 << " ms\n";
+    std::cout << "Cleanup:                     " << g_cleanup_time_ns    / 1e6 << " ms\n";
+    std::cout << "===================================\n";
 }
+
 
 
 // Optionally print suffix array output for debugging

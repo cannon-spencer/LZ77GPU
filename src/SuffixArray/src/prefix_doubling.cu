@@ -16,27 +16,8 @@
 #include "cuda_utils.cuh"
 #include "profiler.cuh"
 
-
-
 /**
- * CUDA kernel to initialize the rank and index arrays for suffix array construction.
- *
- * - Converts the input string `s` (8-bit characters) into 32-bit initial ranks.
- * - Initializes the index array with values [0, 1, 2, ..., n-1].
- * */
-
-__global__
-void initialize_rank_and_index(const uint8_t* s, uint32_t* d_rank, uint32_t* d_index, size_t n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        d_rank[i] = static_cast<uint32_t>(s[i]) + 1;
-        d_index[i] = i;
-    }
-}
-
-
-/**
- * Kernel to compute the "diff" array by comparing consecutive sorted suffix indices:
+ * Kernel to compute the "diff" (head-flags) by comparing consecutive sorted KEYS:
  * If sorted suffix i differs from suffix i-1, set diff[i] = 1 else 0.
  * The first suffix i=0 is always a new group => diff[0] = 1.
  */
@@ -72,11 +53,12 @@ void assign_ranks_kernel(const uint32_t* d_index, const uint32_t* d_diff, uint32
  *   - d_diff[n]  - difference array, scanned to get group IDs
  *
  * Steps per iteration:
- *   1) Sort d_index by comparing (rank[i], rank[i+k]).
- *   2) compute_diff_kernel => d_diff[i] in {0,1}.
- *   3) inclusive_scan(d_diff).
- *   4) assign_ranks_kernel => rank[suffixIndex] = groupID
- *   5) if d_diff[n-1] == n, break early
+ *   1) Build packed keys: key[i] = pack(R[i], R[i+k]). Values = d_index (suffix i).
+ *   2) Run thrust::sort_by_key(keys, d_index).
+ *   3) compute_diff_from_keys => d_diff[i] in {0,1} (head-flags where key changes).
+ *   4) inclusive_scan(d_diff).
+ *   5) assign_ranks_kernel => rank[suffixIndex] = groupID
+ *   6) if d_diff[n-1] == n, break early
  */
 
 // todo: make this return a device pointer so we can utilize it without pulling it off of the GPU
@@ -105,9 +87,23 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     cudaMalloc(&d_s, n * sizeof(uint8_t));
     CHECK_CUDA_ERROR(cudaMemcpy(d_s, s.data(), n * sizeof(uint8_t), cudaMemcpyHostToDevice));
 
-    // Do initializations to correct structure in parallel
-    initialize_rank_and_index<<<gridSize, blockSize>>>(d_s, d_rank, d_index, n);
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    // Initialize d_index = [0..n-1]
+    {
+        auto d_index_ptr = thrust::device_pointer_cast(d_index);
+        thrust::sequence(thrust::device, d_index_ptr, d_index_ptr + n, 0);
+    }
+
+    // Initialize d_rank from input string (promote to uint32 + 1)
+    {
+        auto s_ptr   = thrust::device_pointer_cast(d_s);
+        auto d_rank_ptr = thrust::device_pointer_cast(d_rank);
+        thrust::transform(thrust::device,
+                          s_ptr, s_ptr + n,
+                          d_rank_ptr,
+                          [] __device__ (uint8_t c) {
+                             return static_cast<uint32_t>(c) + 1;
+                          });
+    }
     cudaFree(d_s);
 
     std::cout << "Total GPU Memory Allocated: " << g_allocated / (1024.0 * 1024.0) << " MB\n";
@@ -135,20 +131,19 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
                         uint32_t b = (i + k < n) ? R[i + k] : 0u;
                         return (uint64_t(a) << 32) | uint64_t(b);
                 });
+            record_time(g_build_keys_time_ns, t1);
 
-            // sequence index values from 0...n on init run
-            if (k == 1) thrust::sequence(d_index_ptr, d_index_ptr + n, 0);
-
-            // Radix sort keys - d_index follows sort operations
+            // 2) Radix sort_by_key: keys determine order, d_index rides along
+            auto t2 = now();
             thrust::sort_by_key(d_keys_ptr, d_keys_ptr + n, d_index_ptr);
-            record_time(g_sort_time_ns, t1);
+            record_time(g_sort_time_ns, t2);
         }
 
         // 2) compute head-flags (diff) directly from sorted keys
         auto t3 = now();
         compute_diff_from_keys<<<gridSize, blockSize>>>(d_keys, d_diff, n);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        record_time(g_kernel_diff_time_ns, t3);
+        record_time(g_diff_time_ns, t3);
 
         // 3) inclusive scan => group IDs
         {
@@ -169,7 +164,7 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
         auto t6 = now();
         uint32_t max_rank;
         CHECK_CUDA_ERROR(cudaMemcpy(&max_rank, d_diff + (n - 1), sizeof(uint32_t), cudaMemcpyDeviceToHost));
-        record_time(g_copy_time_ns, t6);
+        record_time(g_copy_chk_time_ns, t6);
 
         // all ranks are distinct -> done
         if (max_rank == static_cast<uint32_t>(n)) {

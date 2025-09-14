@@ -2,13 +2,14 @@
 
 #include <chrono>
 
-inline uint64_t g_alloc_time_ns = 0;
-inline uint64_t g_sort_time_ns = 0;
-inline uint64_t g_kernel_diff_time_ns = 0;
-inline uint64_t g_scan_time_ns = 0;
-inline uint64_t g_kernel_assign_time_ns = 0;
-inline uint64_t g_copy_time_ns = 0;
-inline uint64_t g_cleanup_time_ns = 0;
+inline uint64_t g_init_time_ns;          // H2D + initial sequence/transform
+inline uint64_t g_build_keys_time_ns;    // thrust::transform building keys
+inline uint64_t g_sort_time_ns;          // sort_by_key only
+inline uint64_t g_diff_time_ns;          // compute_diff_from_keys kernel
+inline uint64_t g_scan_time_ns;          // inclusive_scan
+inline uint64_t g_assign_time_ns;        // assign_ranks kernel
+inline uint64_t g_copy_chk_time_ns;      // copy back max rank (termination check)
+inline uint64_t g_cleanup_time_ns;       // frees
 
 inline auto now() {
     return std::chrono::high_resolution_clock::now();
