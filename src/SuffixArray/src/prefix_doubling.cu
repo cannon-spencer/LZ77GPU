@@ -60,11 +60,9 @@ void assign_ranks_kernel(const uint32_t* d_index, const uint32_t* d_diff, uint32
  *   5) assign_ranks_kernel => rank[suffixIndex] = groupID
  *   6) if d_diff[n-1] == n, break early
  */
-
-// todo: make this return a device pointer so we can utilize it without pulling it off of the GPU
-std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& s){
+uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& s){
     size_t n = s.size();
-    if (n == 0) return {};
+    if (n == 0) return nullptr;
 
     // Kernel config
     int blockSize = 1024;
@@ -101,8 +99,8 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
                           s_ptr, s_ptr + n,
                           d_rank_ptr,
                           [] __device__ (uint8_t c) {
-                             return static_cast<uint32_t>(c) + 1;
-                          });
+            return static_cast<uint32_t>(c) + 1;
+        });
     }
     cudaFree(d_s);
 
@@ -125,12 +123,12 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
 
             // Build keys with a transform – recompute every round from current ranks and k
             thrust::transform(
-                I, I + n, d_keys_ptr,
-                [R = d_rank, n, k] __device__ (uint32_t i) {
+                    I, I + n, d_keys_ptr,
+                    [R = d_rank, n, k] __device__ (uint32_t i) {
                         uint32_t a = R[i];
                         uint32_t b = (i + k < n) ? R[i + k] : 0u;
                         return (uint64_t(a) << 32) | uint64_t(b);
-                });
+                    });
             record_time(g_build_keys_time_ns, t1);
 
             // 2) Radix sort_by_key: keys determine order, d_index rides along
@@ -172,20 +170,32 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
         }
     }
 
-    // At this point, d_index is sorted suffix array
-    // Copy it back to host
-    auto t7 = now();
-    std::vector<uint32_t> hostIndex(n);
-    CHECK_CUDA_ERROR(cudaMemcpy(hostIndex.data(), d_index,n * sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    record_time(g_copy_time_ns, t7);
-
     // Clean up
     auto t8 = now();
     cudaFree(d_rank);
-    cudaFree(d_index);
     cudaFree(d_diff);
     cudaFree(d_keys);
     record_time(g_cleanup_time_ns, t8);
 
-    return hostIndex;
+    return d_index; // caller owns d_index and must free
+}
+
+
+
+// Public wrapper: Returns the host Suffix Array
+std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& s)
+{
+    auto t7 = now();
+    std::vector<uint32_t> host_sa;
+    if (s.empty()) return host_sa;
+
+    // Compute suffix array, transfer from device to host
+    uint32_t* d_sa = build_suffix_array_prefix_doubling_device(s);
+    host_sa.resize(s.size());
+    CHECK_CUDA_ERROR(cudaMemcpy(host_sa.data(), d_sa, s.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost));
+    cudaFree(d_sa);
+
+    record_time(g_copy_time_ns, t7);
+
+    return host_sa;
 }
