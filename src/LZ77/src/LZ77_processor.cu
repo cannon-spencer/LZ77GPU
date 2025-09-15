@@ -95,6 +95,7 @@ __global__ void computePSVNSVKernel(
     const SA_t* __restrict__ input,
     SA_t* __restrict__ psv_output,
     SA_t* __restrict__ nsv_output,
+    SA_t* __restrict__ block_min_output,
     const size_t length) 
 {
     extern __shared__ uint8_t shared_mem[];
@@ -134,58 +135,120 @@ __global__ void computePSVNSVKernel(
             }
         }
     }
+
+    // Compute block minimum using reduction
+    __syncthreads();
+    
+    // Parallel reduction to find minimum in shared memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_data[tid] = min(shared_data[tid], shared_data[tid + stride]);
+        }
+        __syncthreads();
+    }
+    
+    // Thread 0 writes the block minimum
+    if (tid == 0) {
+        block_min_output[bid] = shared_data[0];
+    }
 }
 
 template<typename SA_t>
 __global__ void processPSVNSVBoundariesKernel(
     const SA_t* __restrict__ sa_array,     
-    SA_t* __restrict__ psv_text_order,   
-    SA_t* __restrict__ nsv_text_order,
+    SA_t* __restrict__ psv_sa_order,
+    SA_t* __restrict__ nsv_sa_order,
+    const SA_t* __restrict__ block_min_output, 
     const size_t length,
     const size_t block_size) 
 {
-    extern __shared__ uint8_t shared_mem[];
-    SA_t* shared_data = reinterpret_cast<SA_t*>(shared_mem);
 
     const int tid = threadIdx.x;
-    const int gid = blockIdx.x * blockDim.x + tid;
+    const int bid = blockIdx.x;
+    const int gid = bid * blockDim.x + tid;
     const SA_t MAX_VAL = get_max_value<SA_t>();
-
-    // Load data into shared memory
-    if (gid < length) {
-        shared_data[tid] = sa_array[gid];
-    } else {
-        shared_data[tid] = MAX_VAL;
-    }
-    __syncthreads();
-
+    const size_t total_blocks = (length + block_size - 1) / block_size;
+    
     if (gid >= length) return;
 
-    if (gid < length) {
-        const SA_t current = shared_data[tid];
-        SA_t psv_val = MAX_VAL;
-        SA_t nsv_val = MAX_VAL;
+    const SA_t current = sa_array[gid];
+    SA_t psv_val = psv_sa_order[gid];
+    SA_t nsv_val = nsv_sa_order[gid];
 
-        for (int i = tid - 1; i >= 0; --i) {
-            if (shared_data[i] < current) {
-                psv_val = shared_data[i];
-                break;
-            }
+    // Progressive PSV search - start with small chunks, grow exponentially
+    if (psv_val == MAX_VAL && bid > 0) {
+
+        int search_block = bid - 1;
+        while (search_block >= 0 && block_min_output[search_block] >= current) {
+            search_block--;
         }
+        
 
-        for (int i = tid + 1; i < blockDim.x && (blockIdx.x * blockDim.x + i) < length; ++i) {
-            if (shared_data[i] < current) {
-                nsv_val = shared_data[i];
-                break;
+        if (search_block >= 0) {
+            size_t search_end = min((size_t)gid, (size_t)(search_block + 1) * block_size);
+            size_t search_start = max((size_t)0, search_end > 2048 ? search_end - 2048 : 0);
+            
+            for (size_t i = search_end - 1; i >= search_start && psv_val == MAX_VAL; --i) {
+                if (sa_array[i] < current) {
+                    psv_val = sa_array[i];
+                    break;
+                }
+                if (i == 0) break; 
             }
-        }
-
-        SA_t text_pos = sa_array[gid];
-        if (text_pos < length) {
-            psv_text_order[text_pos] = psv_val;
-            nsv_text_order[text_pos] = nsv_val;
         }
     }
+    
+    // Progressive NSV search - same strategy
+    if (nsv_val == MAX_VAL && bid + 1 < total_blocks) {
+
+        size_t search_block = bid + 1;
+        while (search_block < total_blocks && block_min_output[search_block] >= current) {
+            search_block++;
+        }
+        
+        if (search_block < total_blocks) {
+            size_t search_start = max((size_t)gid + 1, search_block * block_size);
+            size_t search_end = min(length, search_start + 2048);
+            
+            for (size_t i = search_start; i < search_end && nsv_val == MAX_VAL; ++i) {
+                if (sa_array[i] < current) {
+                    nsv_val = sa_array[i];
+                    break;
+                }
+            }
+        }
+    }
+    psv_sa_order[gid] = psv_val;
+    nsv_sa_order[gid] = nsv_val;
+}
+
+template<typename SA_t>
+void PipelinePSVNSVProcessor::convertToTextOrderWithCUB(
+    const SA_t* d_sa_array,
+    const SA_t* d_psv_sa_order,
+    const SA_t* d_nsv_sa_order,
+    SA_t* d_psv_text_order,
+    SA_t* d_nsv_text_order,
+    size_t length)
+{
+    // Create device vectors for CUB sorting
+    thrust::device_vector<SA_t> keys_psv(d_sa_array, d_sa_array + length);
+    thrust::device_vector<SA_t> values_psv(d_psv_sa_order, d_psv_sa_order + length);
+    
+    thrust::device_vector<SA_t> keys_nsv(d_sa_array, d_sa_array + length);
+    thrust::device_vector<SA_t> values_nsv(d_nsv_sa_order, d_nsv_sa_order + length);
+    
+    // Sort PSV by text position (SA values)
+    thrust::sort_by_key(keys_psv.begin(), keys_psv.end(), values_psv.begin());
+    
+    // Sort NSV by text position (SA values) 
+    thrust::sort_by_key(keys_nsv.begin(), keys_nsv.end(), values_nsv.begin());
+    
+    // Copy sorted results back to output arrays
+    thrust::copy(values_psv.begin(), values_psv.end(), 
+                 thrust::device_pointer_cast(d_psv_text_order));
+    thrust::copy(values_nsv.begin(), values_nsv.end(), 
+                 thrust::device_pointer_cast(d_nsv_text_order));
 }
 
 void PipelinePSVNSVProcessor::calculateAvailableMemory() {
@@ -375,30 +438,52 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     const int num_blocks = (length + block_size - 1) / block_size;
     const size_t shared_mem_size = block_size * sizeof(SA_t);
 
-    SA_t *d_psv_output, *d_nsv_output;
-    cudaMalloc(&d_psv_output, length * sizeof(SA_t));
-    cudaMalloc(&d_nsv_output, length * sizeof(SA_t));
+    SA_t *d_psv_sa_order, *d_nsv_sa_order;
+    SA_t *d_psv_text_order, *d_nsv_text_order;
+    SA_t *d_block_mins; 
+    cudaMalloc(&d_psv_sa_order, length * sizeof(SA_t));
+    cudaMalloc(&d_nsv_sa_order, length * sizeof(SA_t));
+    cudaMalloc(&d_psv_text_order, length * sizeof(SA_t));
+    cudaMalloc(&d_nsv_text_order, length * sizeof(SA_t));
+    cudaMalloc(&d_block_mins, num_blocks * sizeof(SA_t));
 
     std::vector<SA_t> h_psv_text_order(length);
     std::vector<SA_t> h_nsv_text_order(length);
 
     {
-        cudaMemset(d_psv_output, 0xFF, length * sizeof(SA_t));
-        cudaMemset(d_nsv_output, 0xFF, length * sizeof(SA_t)); 
+        cudaMemset(d_psv_sa_order, 0xFF, length * sizeof(SA_t));
+        cudaMemset(d_nsv_sa_order, 0xFF, length * sizeof(SA_t)); 
 
-        computePSVNSVKernel<<<num_blocks, block_size, 2 * shared_mem_size>>>(
-            d_sa_array, d_psv_output, d_nsv_output, length
+        profiler.start();
+        // Phase 1: Intra-block PSV/NSV computation (SA order)
+        computePSVNSVKernel<<<num_blocks, block_size, shared_mem_size>>>(
+            d_sa_array, d_psv_sa_order, d_nsv_sa_order, d_block_mins, length
         );
+        profiler.stop("Phase 1: Intra-block computation");
 
-        processPSVNSVBoundariesKernel<<<num_blocks, block_size, 2 * shared_mem_size>>>(
-            d_sa_array, d_psv_output, d_nsv_output, length, block_size
+        profiler.start();
+        // Phase 2: Cross-block boundary processing (stay in SA order)
+        processPSVNSVBoundariesKernel<<<num_blocks, block_size>>>(
+            d_sa_array, d_psv_sa_order, d_nsv_sa_order,d_block_mins, length, block_size
         );
+        profiler.stop("Phase 2: Cross-block processing");
 
-        cudaMemcpy(h_psv_text_order.data(), d_psv_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_nsv_text_order.data(), d_nsv_output, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        profiler.start();
+        // Phase 3: Convert to text order using CUB sorting
+        convertToTextOrderWithCUB(
+            d_sa_array, d_psv_sa_order, d_nsv_sa_order,
+            d_psv_text_order, d_nsv_text_order, length
+        );
+        profiler.stop("Phase 3: CUB text order conversion");
 
-        cudaFree(d_psv_output);
-        cudaFree(d_nsv_output);
+        cudaMemcpy(h_psv_text_order.data(), d_psv_text_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_nsv_text_order.data(), d_nsv_text_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+
+        cudaFree(d_psv_sa_order);
+        cudaFree(d_nsv_sa_order);
+        cudaFree(d_psv_text_order);
+        cudaFree(d_nsv_text_order);
+        cudaFree(d_block_mins);
         cudaFree(d_sa_array);
     }
 
@@ -451,6 +536,7 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
 
         std::vector<SA_t> final_psv_results(length);
         std::vector<SA_t> final_nsv_results(length);
+        std::vector<std::vector<SA_t>> all_block_mins;
 
         {
             cudaStream_t compute_stream;
@@ -464,6 +550,7 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
             cudaMalloc(&d_psv_output, optimal_batch_size * sizeof(SA_t));
             cudaMalloc(&d_nsv_output, optimal_batch_size * sizeof(SA_t));
 
+            
             size_t processed_blocks = 0;
             for (size_t offset = 0; offset < length; offset += optimal_batch_size) {
                 processed_blocks++;
@@ -475,13 +562,16 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
                 size_t current_batch = std::min(optimal_batch_size, length - offset);
                 const int num_blocks = (current_batch + block_size - 1) / block_size;
 
+                SA_t* d_block_mins;
+                cudaMalloc(&d_block_mins, num_blocks * sizeof(SA_t));
+
                 cudaMemcpyAsync(d_input, sa_array + offset, 
                             current_batch * sizeof(SA_t),
                             cudaMemcpyHostToDevice, 
                             compute_stream);
 
                 computePSVNSVKernel<<<num_blocks, block_size, shared_mem_size, compute_stream>>>(
-                    d_input, d_psv_output, d_nsv_output, current_batch
+                    d_input, d_psv_output, d_nsv_output, d_block_mins, current_batch
                 );
 
                 cudaMemcpyAsync(&final_psv_results[offset], d_psv_output,
@@ -701,8 +791,12 @@ template __global__ void processPSVTasksKernel<size_t>(const size_t*, size_t*, c
 template __global__ void processNSVTasksKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t*, const size_t, const size_t, const size_t);
 template __global__ void processNSVTasksKernel<size_t>(const size_t*, size_t*, const size_t*, const size_t, const size_t, const size_t);
 
-template __global__ void computePSVNSVKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const size_t);
-template __global__ void computePSVNSVKernel<size_t>(const size_t*, size_t*, size_t*, const size_t);
+template __global__ void computePSVNSVKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, uint32_t*, const size_t);
+template __global__ void computePSVNSVKernel<size_t>(const size_t*, size_t*, size_t*, size_t*, const size_t);
 
-template __global__ void processPSVNSVBoundariesKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const size_t, const size_t);
-template __global__ void processPSVNSVBoundariesKernel<size_t>(const size_t*, size_t*, size_t*, const size_t, const size_t);
+template __global__ void processPSVNSVBoundariesKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const uint32_t*, const size_t, const size_t);
+template __global__ void processPSVNSVBoundariesKernel<size_t>(const size_t*, size_t*, size_t*, const size_t*, const size_t, const size_t);
+template void PipelinePSVNSVProcessor::convertToTextOrderWithCUB<uint32_t>(
+    const uint32_t*, const uint32_t*, const uint32_t*, uint32_t*, uint32_t*, size_t);
+template void PipelinePSVNSVProcessor::convertToTextOrderWithCUB<size_t>(
+    const size_t*, const size_t*, const size_t*, size_t*, size_t*, size_t);

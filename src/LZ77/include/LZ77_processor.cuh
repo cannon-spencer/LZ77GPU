@@ -6,8 +6,11 @@
 #include <cstdint>
 #include <type_traits>
 #include <cuda_runtime.h>
+#include <thrust/sort.h>
+#include <thrust/device_vector.h>
+#include <thrust/copy.h>
 
-constexpr size_t DEFAULT_BLOCK_SIZE = 256;
+constexpr size_t DEFAULT_BLOCK_SIZE = 1024;
 constexpr float MEMORY_RESERVE_RATIO = 0.9f;
 
 // Helper template functions for handling SA_t types
@@ -51,6 +54,7 @@ __global__ void computePSVNSVKernel(
     const SA_t* __restrict__ input,
     SA_t* __restrict__ psv_output,
     SA_t* __restrict__ nsv_output,
+    SA_t* __restrict__ block_min_output,
     const size_t length
 );
 
@@ -65,8 +69,8 @@ __global__ void computePSVNSVKernelTextOrder(
 template<typename SA_t>
 __global__ void processPSVNSVBoundariesKernel(
     const SA_t* __restrict__ sa_array,
-    SA_t* __restrict__ psv_text_order,
-    SA_t* __restrict__ nsv_text_order,
+    SA_t* __restrict__ psv_sa_order,
+    SA_t* __restrict__ nsv_sa_order,
     const size_t length,
     const size_t block_size
 );
@@ -122,6 +126,10 @@ private:
 
     template<typename SA_t>
     void ComputeLZ77(const uint8_t *data, SA_t *d_psv_text, SA_t *d_nsv_text, size_t n, std::string file_name);
+
+    template<typename SA_t>
+    void convertToTextOrderWithCUB(const SA_t* d_sa_array, const SA_t* d_psv_sa_order, const SA_t* d_nsv_sa_order, SA_t* d_psv_text_order, SA_t* d_nsv_text_order, size_t length);
+
 };
 
 #endif // LZ77_PROCESSOR_CUH
