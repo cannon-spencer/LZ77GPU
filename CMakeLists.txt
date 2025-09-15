@@ -5,8 +5,21 @@ cmake_minimum_required(VERSION 3.18)
 project(LZ77GPU LANGUAGES C CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_ARCHITECTURES 80)
+
+# ---------- helper for device lambdas ----------
+function(enable_cuda_lambdas tgt)
+    if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.0)
+        target_compile_options(${tgt} PRIVATE
+                $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+    else()
+        target_compile_options(${tgt} PRIVATE
+                $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
+    endif()
+endfunction()
 
 ###############################################################################
 #  Helper – just for IDE grouping
@@ -22,20 +35,6 @@ macro(group_sources BASE_DIR)
         endforeach()
     endif()
 endmacro()
-
-# Helper to enable device lambdas on a target
-function(enable_cuda_lambdas tgt)
-    if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.0)
-        target_compile_options(${tgt} PRIVATE
-                $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    else()
-        target_compile_options(${tgt} PRIVATE
-                $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
-    endif()
-endfunction()
-
-enable_cuda_lambdas(suffix_array)
-
 
 ###############################################################################
 #  Source lists
@@ -74,14 +73,16 @@ set(BUILD_EXAMPLES     OFF CACHE BOOL "" FORCE)
 set(BUILD_DIVSUFSORT64 ON  CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(divsufsort)
 set(DIVSUFSORT_INCLUDE_DIR ${divsufsort_SOURCE_DIR}/include)
+set(DIVSUFSORT_BUILD_INCLUDE_DIR ${divsufsort_BINARY_DIR}/include)
+include_directories(${DIVSUFSORT_INCLUDE_DIR} ${DIVSUFSORT_BUILD_INCLUDE_DIR})
 
 # ── SDSL ─────────────────────────────────────────────────────────────────────
 FetchContent_Declare(sdsl
         GIT_REPOSITORY https://github.com/simongog/sdsl-lite.git)
 set(GENERATE_DOC OFF CACHE BOOL "" FORCE)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${divsufsort_SOURCE_DIR}/include")
 FetchContent_MakeAvailable(sdsl)
 target_include_directories(sdsl INTERFACE ${DIVSUFSORT_INCLUDE_DIR})
+target_link_libraries(sdsl INTERFACE divsufsort divsufsort64)
 
 # ── CLI11 ────────────────────────────────────────────────────────────────────
 FetchContent_Declare(cli11
@@ -161,6 +162,9 @@ set(ALL_INCLUDES
 
 foreach(tgt IN ITEMS sa_profiler lz77)
     target_include_directories(${tgt} PRIVATE ${ALL_INCLUDES})
+    target_include_directories(${tgt} PRIVATE
+            ${DIVSUFSORT_INCLUDE_DIR}
+            ${DIVSUFSORT_BUILD_INCLUDE_DIR})
     target_link_libraries(${tgt} PRIVATE
             cubwt util malloc_count
             CLI11::CLI11
@@ -176,6 +180,9 @@ endforeach()
 ###############################################################################
 add_executable(tests ${TEST_SOURCES})
 target_include_directories(tests PRIVATE ${ALL_INCLUDES})
+target_include_directories(tests PRIVATE
+    ${DIVSUFSORT_INCLUDE_DIR}
+    ${DIVSUFSORT_BUILD_INCLUDE_DIR})
 target_link_libraries(tests PRIVATE
         Catch2::Catch2WithMain
         cubwt util malloc_count
@@ -191,10 +198,22 @@ catch_discover_tests(tests)
 
 # link sa_profiler
 target_link_libraries(sa_profiler PRIVATE suffix_array)
+add_dependencies(sa_profiler sdsl divsufsort divsufsort64)
 
 # link lz77
 target_link_libraries(lz77 PRIVATE suffix_array)
+add_dependencies(lz77 sdsl divsufsort divsufsort64)
+target_link_libraries(lz77 PRIVATE divsufsort divsufsort64)
 
 # link tests
 target_link_libraries(tests PRIVATE suffix_array)
+add_dependencies(tests sdsl divsufsort divsufsort64)
+target_link_libraries(tests PRIVATE divsufsort divsufsort64)
 
+# ---------- enable lambdas AFTER targets exist ----------
+enable_cuda_lambdas(cubwt)
+enable_cuda_lambdas(util)
+enable_cuda_lambdas(suffix_array)
+enable_cuda_lambdas(sa_profiler)
+enable_cuda_lambdas(lz77)
+enable_cuda_lambdas(tests)
