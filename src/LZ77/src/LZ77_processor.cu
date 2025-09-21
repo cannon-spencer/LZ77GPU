@@ -231,24 +231,15 @@ void PipelinePSVNSVProcessor::convertToTextOrderWithCUB(
     SA_t* d_nsv_text_order,
     size_t length)
 {
-    // Create device vectors for CUB sorting
-    thrust::device_vector<SA_t> keys_psv(d_sa_array, d_sa_array + length);
-    thrust::device_vector<SA_t> values_psv(d_psv_sa_order, d_psv_sa_order + length);
-    
-    thrust::device_vector<SA_t> keys_nsv(d_sa_array, d_sa_array + length);
-    thrust::device_vector<SA_t> values_nsv(d_nsv_sa_order, d_nsv_sa_order + length);
-    
-    // Sort PSV by text position (SA values)
-    thrust::sort_by_key(keys_psv.begin(), keys_psv.end(), values_psv.begin());
-    
-    // Sort NSV by text position (SA values) 
-    thrust::sort_by_key(keys_nsv.begin(), keys_nsv.end(), values_nsv.begin());
-    
-    // Copy sorted results back to output arrays
-    thrust::copy(values_psv.begin(), values_psv.end(), 
-                 thrust::device_pointer_cast(d_psv_text_order));
-    thrust::copy(values_nsv.begin(), values_nsv.end(), 
-                 thrust::device_pointer_cast(d_nsv_text_order));
+    auto sa_ptr = thrust::device_pointer_cast(d_sa_array);
+    auto psv_sa_ptr = thrust::device_pointer_cast(d_psv_sa_order);
+    auto nsv_sa_ptr = thrust::device_pointer_cast(d_nsv_sa_order);
+    auto psv_text_ptr = thrust::device_pointer_cast(d_psv_text_order);
+    auto nsv_text_ptr = thrust::device_pointer_cast(d_nsv_text_order);
+
+    thrust::scatter(psv_sa_ptr, psv_sa_ptr + length, sa_ptr, psv_text_ptr);
+    thrust::scatter(nsv_sa_ptr, nsv_sa_ptr + length, sa_ptr, nsv_text_ptr);
+
 }
 
 void PipelinePSVNSVProcessor::calculateAvailableMemory() {
