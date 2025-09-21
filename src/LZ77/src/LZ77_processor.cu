@@ -222,26 +222,6 @@ __global__ void processPSVNSVBoundariesKernel(
     nsv_sa_order[gid] = nsv_val;
 }
 
-template<typename SA_t>
-void PipelinePSVNSVProcessor::convertToTextOrderWithCUB(
-    const SA_t* d_sa_array,
-    const SA_t* d_psv_sa_order,
-    const SA_t* d_nsv_sa_order,
-    SA_t* d_psv_text_order,
-    SA_t* d_nsv_text_order,
-    size_t length)
-{
-    auto sa_ptr = thrust::device_pointer_cast(d_sa_array);
-    auto psv_sa_ptr = thrust::device_pointer_cast(d_psv_sa_order);
-    auto nsv_sa_ptr = thrust::device_pointer_cast(d_nsv_sa_order);
-    auto psv_text_ptr = thrust::device_pointer_cast(d_psv_text_order);
-    auto nsv_text_ptr = thrust::device_pointer_cast(d_nsv_text_order);
-
-    thrust::scatter(psv_sa_ptr, psv_sa_ptr + length, sa_ptr, psv_text_ptr);
-    thrust::scatter(nsv_sa_ptr, nsv_sa_ptr + length, sa_ptr, nsv_text_ptr);
-
-}
-
 void PipelinePSVNSVProcessor::calculateAvailableMemory() {
     size_t free_memory, total_memory;
     cudaMemGetInfo(&free_memory, &total_memory);
@@ -430,12 +410,11 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     const size_t shared_mem_size = block_size * sizeof(SA_t);
 
     SA_t *d_psv_sa_order, *d_nsv_sa_order;
-    SA_t *d_psv_text_order, *d_nsv_text_order;
     SA_t *d_block_mins; 
+    SA_t * d_temp_text_order;
     cudaMalloc(&d_psv_sa_order, length * sizeof(SA_t));
     cudaMalloc(&d_nsv_sa_order, length * sizeof(SA_t));
-    cudaMalloc(&d_psv_text_order, length * sizeof(SA_t));
-    cudaMalloc(&d_nsv_text_order, length * sizeof(SA_t));
+    cudaMalloc(&d_temp_text_order, length * sizeof(SA_t));
     cudaMalloc(&d_block_mins, num_blocks * sizeof(SA_t));
 
     std::vector<SA_t> h_psv_text_order(length);
@@ -460,20 +439,25 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
         profiler.stop("Phase 2: Cross-block processing");
 
         profiler.start();
-        // Phase 3: Convert to text order using CUB sorting
-        convertToTextOrderWithCUB(
-            d_sa_array, d_psv_sa_order, d_nsv_sa_order,
-            d_psv_text_order, d_nsv_text_order, length
-        );
+        // Phase 3: Convert to text order using CUB (thrust)
+        auto sa_ptr = thrust::device_pointer_cast(d_sa_array);
+        auto psv_sa_ptr = thrust::device_pointer_cast(d_psv_sa_order);
+        auto temp_ptr = thrust::device_pointer_cast(d_temp_text_order);
+        thrust::scatter(psv_sa_ptr, psv_sa_ptr + length, sa_ptr, temp_ptr);
+        cudaMemcpy(d_psv_sa_order, d_temp_text_order, length * sizeof(SA_t), cudaMemcpyDeviceToDevice);
+
+        auto nsv_sa_ptr = thrust::device_pointer_cast(d_nsv_sa_order);
+        thrust::scatter(nsv_sa_ptr, nsv_sa_ptr + length, sa_ptr, temp_ptr);
+        cudaMemcpy(d_nsv_sa_order, d_temp_text_order, length * sizeof(SA_t), cudaMemcpyDeviceToDevice);
+
         profiler.stop("Phase 3: CUB text order conversion");
 
-        cudaMemcpy(h_psv_text_order.data(), d_psv_text_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_nsv_text_order.data(), d_nsv_text_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_psv_text_order.data(), d_psv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_nsv_text_order.data(), d_nsv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
 
         cudaFree(d_psv_sa_order);
         cudaFree(d_nsv_sa_order);
-        cudaFree(d_psv_text_order);
-        cudaFree(d_nsv_text_order);
+        cudaFree(d_temp_text_order);
         cudaFree(d_block_mins);
         cudaFree(d_sa_array);
     }
@@ -787,7 +771,3 @@ template __global__ void computePSVNSVKernel<size_t>(const size_t*, size_t*, siz
 
 template __global__ void processPSVNSVBoundariesKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const uint32_t*, const size_t, const size_t);
 template __global__ void processPSVNSVBoundariesKernel<size_t>(const size_t*, size_t*, size_t*, const size_t*, const size_t, const size_t);
-template void PipelinePSVNSVProcessor::convertToTextOrderWithCUB<uint32_t>(
-    const uint32_t*, const uint32_t*, const uint32_t*, uint32_t*, uint32_t*, size_t);
-template void PipelinePSVNSVProcessor::convertToTextOrderWithCUB<size_t>(
-    const size_t*, const size_t*, const size_t*, size_t*, size_t*, size_t);

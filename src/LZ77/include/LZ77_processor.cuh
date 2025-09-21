@@ -127,9 +127,6 @@ private:
     template<typename SA_t>
     void ComputeLZ77(const uint8_t *data, SA_t *d_psv_text, SA_t *d_nsv_text, size_t n, std::string file_name);
 
-    template<typename SA_t>
-    void convertToTextOrderWithCUB(const SA_t* d_sa_array, const SA_t* d_psv_sa_order, const SA_t* d_nsv_sa_order, SA_t* d_psv_text_order, SA_t* d_nsv_text_order, size_t length);
-
 };
 
 #endif // LZ77_PROCESSOR_CUH
