@@ -181,7 +181,7 @@ int main(int argc, char** argv){
     /**
      *  FINAL COMPARISON
      * */
-
+    /*
     // Compare results
     bool match = compare_SA(SA_pd, SA_cubwt);
     //match = match && compare_SA(SA_cubwt, SA_sdsl);
@@ -194,7 +194,7 @@ int main(int argc, char** argv){
         // debug print the arrays
         //dump_sa(SA_pd,    "Prefix-doubling SA", SA_pd.size());
         //dump_sa(SA_cubwt, "libcubwt SA",        SA_cubwt.size());
-    }
+    } */
 
     return 0;
 }

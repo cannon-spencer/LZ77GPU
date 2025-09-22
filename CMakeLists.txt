@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_ARCHITECTURES 80)
+set(CMAKE_CUDA_ARCHITECTURES "80;86;90;100")
 
 # ---------- helper for device lambdas ----------
 function(enable_cuda_lambdas tgt)
