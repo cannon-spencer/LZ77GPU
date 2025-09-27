@@ -7,11 +7,32 @@
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <thrust/scan.h>
+#include <thrust/device_vector.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/tuple.h>
 
 #include "cuda_utils.cuh"
 #include "profiler.cuh"
+
+template<typename T>
+__global__
+void init_index_rank_kernel_template(const uint8_t* d_s, T* d_index, T* d_rank, size_t n){
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        d_index[i] = static_cast<T>(i);
+        d_rank[i]  = static_cast<T>(d_s[i]);
+    }
+}
+
+template<typename T>
+__global__
+void pack_keys_kernel_template(const T* d_rank, size_t n, size_t k, T* key_hi, T* key_lo){
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        key_hi[i] = d_rank[i];
+        key_lo[i] = (i + k < n) ? d_rank[i + k] : static_cast<T>(0);
+    }
+}
 
 /**
  * Kernel to compute the "diff" array by comparing consecutive sorted suffix indices:
@@ -64,27 +85,27 @@ void assign_ranks_kernel_template(const T* d_index, const T* d_diff, T* d_rank, 
  * Compare (i, j) by (rank[i], rank[i+k]) vs. (rank[j], rank[j+k]).
  */
 
-template<typename T>
-struct SuffixComparatorTemplate {
-    const T* d_rank; // Device pointer to current rank array
-    size_t k;         // offset
-    size_t n;         // total length
+// template<typename T>
+// struct SuffixComparatorTemplate {
+//     const T* d_rank; // Device pointer to current rank array
+//     size_t k;         // offset
+//     size_t n;         // total length
 
-    __host__ __device__
-    SuffixComparatorTemplate(const T* rank_, size_t k_, size_t n_)
-            : d_rank(rank_), k(k_), n(n_) {}
+//     __host__ __device__
+//     SuffixComparatorTemplate(const T* rank_, size_t k_, size_t n_)
+//             : d_rank(rank_), k(k_), n(n_) {}
 
-    __device__
-    bool operator()(T i, T j) const {
-        T r1i = d_rank[i];
-        T r1j = d_rank[j];
-        if (r1i != r1j) return r1i < r1j;
+//     __device__
+//     bool operator()(T i, T j) const {
+//         T r1i = d_rank[i];
+//         T r1j = d_rank[j];
+//         if (r1i != r1j) return r1i < r1j;
 
-        T r2i = (i + k < n) ? d_rank[i + k] : 0;
-        T r2j = (j + k < n) ? d_rank[j + k] : 0;
-        return r2i < r2j;
-    }
-};
+//         T r2i = (i + k < n) ? d_rank[i + k] : 0;
+//         T r2j = (j + k < n) ? d_rank[j + k] : 0;
+//         return r2i < r2j;
+//     }
+// };
 
 
 /**
@@ -130,21 +151,18 @@ T* build_suffix_array_prefix_doubling_template(const std::vector<uint8_t>& s, si
     cudaMalloc(&d_s, n * sizeof(uint8_t));
     CHECK_CUDA_ERROR(cudaMemcpy(d_s, s.data(), n * sizeof(uint8_t), cudaMemcpyHostToDevice));
 
-    // Initialize the index and rank array using thrust
-    thrust::device_ptr<T> d_index_ptr = thrust::device_pointer_cast(d_index);
-    thrust::sequence(thrust::device, d_index_ptr, d_index_ptr + n, 0);
+    // // Initialize the index and rank array using thrust
+    // cudaMalloc(&d_s, n * sizeof(uint8_t));
+    // CHECK_CUDA_ERROR(cudaMemcpy(d_s, s.data(), n * sizeof(uint8_t), cudaMemcpyHostToDevice));
 
-    thrust::device_ptr<const uint8_t> s_ptr = thrust::device_pointer_cast(d_s);
-    thrust::device_ptr<T> rank_ptr = thrust::device_pointer_cast(d_rank);
-    thrust::transform(thrust::device, 
-                     s_ptr, s_ptr + n, 
-                     rank_ptr,
-                     [] __device__ (uint8_t c) { return static_cast<T>(c); });
+    init_index_rank_kernel_template<<<gridSize, blockSize>>>(d_s, d_index, d_rank, n);
+    CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     cudaFree(d_s);
 
     // Allocate diff after freeing input array
     myCudaMalloc(&d_diff, n * sizeof(T), "d_diff");
+    thrust::device_vector<T> d_key_lo(n);
 
     std::cout << "Total GPU Memory Allocated for " << typeid(T).name() << ": " 
               << g_allocated / (1024.0 * 1024.0) << " MB\n";
@@ -155,9 +173,25 @@ T* build_suffix_array_prefix_doubling_template(const std::vector<uint8_t>& s, si
         // 1) Sort d_index by (rank[i], rank[i+k])
         {
             auto t2 = now();
-            SuffixComparatorTemplate<T> cmp(d_rank, k, n);
-            thrust::device_ptr<T> d_index_ptr = thrust::device_pointer_cast(d_index);
-            thrust::sort(thrust::device, d_index_ptr, d_index_ptr + n, cmp);
+            pack_keys_kernel_template<<<gridSize, blockSize>>>(
+            d_rank, n, k,
+            d_diff,
+            thrust::raw_pointer_cast(d_key_lo.data()));
+            CHECK_CUDA_ERROR(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+            auto key_begin = thrust::make_zip_iterator(
+            thrust::make_tuple(thrust::device_pointer_cast(d_diff), d_key_lo.begin()));
+            auto key_end = key_begin + n;
+
+            thrust::sort_by_key(thrust::device,
+                            key_begin, key_end,
+                            thrust::device_pointer_cast(d_index));
+
+
+            // SuffixComparatorTemplate<T> cmp(d_rank, k, n);
+            // thrust::device_ptr<T> d_index_ptr = thrust::device_pointer_cast(d_index);
+            // thrust::sort(thrust::device, d_index_ptr, d_index_ptr + n, cmp);
             record_time(g_sort_time_ns, t2);
         }
 
