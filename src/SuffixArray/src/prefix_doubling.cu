@@ -79,35 +79,6 @@ void assign_ranks_kernel_template(const T* d_index, const T* d_diff, T* d_rank, 
     }
 }
 
-
-/**
- * Custom comparator functor for suffix indices. Replaces "SuffixKey" usage.
- * Compare (i, j) by (rank[i], rank[i+k]) vs. (rank[j], rank[j+k]).
- */
-
-// template<typename T>
-// struct SuffixComparatorTemplate {
-//     const T* d_rank; // Device pointer to current rank array
-//     size_t k;         // offset
-//     size_t n;         // total length
-
-//     __host__ __device__
-//     SuffixComparatorTemplate(const T* rank_, size_t k_, size_t n_)
-//             : d_rank(rank_), k(k_), n(n_) {}
-
-//     __device__
-//     bool operator()(T i, T j) const {
-//         T r1i = d_rank[i];
-//         T r1j = d_rank[j];
-//         if (r1i != r1j) return r1i < r1j;
-
-//         T r2i = (i + k < n) ? d_rank[i + k] : 0;
-//         T r2j = (j + k < n) ? d_rank[j + k] : 0;
-//         return r2i < r2j;
-//     }
-// };
-
-
 /**
  * Build suffix array with prefix doubling, no SuffixKey array.
  * We'll store:
