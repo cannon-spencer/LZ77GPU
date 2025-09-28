@@ -13,7 +13,7 @@
 #include "libcubwt.cuh"
 #include "prefix_doubling.cuh"
 
-void print_profiling_summary() {
+/*void print_profiling_summary() {
     std::cout << "==== Prefix Doubling Profiling ====\n";
     std::cout << "Init (H2D + seed ranks/idx): " << g_init_time_ns       / 1e6 << " ms\n";
     std::cout << "Build keys (transform):      " << g_build_keys_time_ns / 1e6 << " ms\n";
@@ -25,9 +25,50 @@ void print_profiling_summary() {
     std::cout << "Cleanup:                     " << g_cleanup_time_ns    / 1e6 << " ms\n";
     std::cout << "Final SA copy (D2H):         " << g_copy_back_time_ns  / 1e6 << " ms\n";
     std::cout << "===================================\n";
+} */
+
+#ifdef SA_DEBUG
+
+void print_profiling_summary(double wall_ms)
+{
+    const double init_ms        = g_init_time_ns        / 1e6;
+    const double build_ms       = g_build_keys_time_ns  / 1e6;
+    const double sort_ms        = g_sort_time_ns        / 1e6;
+    const double diff_ms        = g_diff_time_ns        / 1e6;
+    const double scan_ms        = g_scan_time_ns        / 1e6;
+    const double assign_ms      = g_assign_time_ns      / 1e6;
+    const double chk_ms         = g_copy_chk_time_ns    / 1e6;
+    const double cleanup_ms     = g_cleanup_time_ns     / 1e6;
+
+    // Direct copy metric (when not using pinned staging)
+    const double copy_direct_ms = g_copy_back_time_ns   / 1e6;
+
+    // Misc
+    const double reseed_ms      = g_index_seed_time_ns  / 1e6;
+    const double free_ms        = g_d_sa_free_time_ns   / 1e6;
+
+    // Pinned staging metrics (0 if unused)
+    const double pinned_alloc_ms   = g_pinned_alloc_time_ns    / 1e6;
+    const double pinned_d2h_ms     = g_pinned_d2h_time_ns      / 1e6;
+    const double pinned_to_vec_ms  = g_pinned_to_vec_time_ns   / 1e6;
+
+    std::cout << "==== Prefix Doubling Profiling ====\n";
+    std::cout << "Init (H2D + seed ranks/idx): " << init_ms        << " ms\n";
+    std::cout << "Build keys (transform):      " << build_ms       << " ms\n";
+    std::cout << "Radix sort_by_key:           " << sort_ms        << " ms\n";
+    std::cout << "Head-flags (diff) kernel:    " << diff_ms        << " ms\n";
+    std::cout << "Inclusive scan:              " << scan_ms        << " ms\n";
+    std::cout << "Assign ranks kernel:         " << assign_ms      << " ms\n";
+    std::cout << "Termination check memcpy:    " << chk_ms         << " ms\n";
+    std::cout << "Cleanup:                     " << cleanup_ms     << " ms\n";
+    std::cout << "Final SA copy (D2H, direct): " << copy_direct_ms << " ms\n";
+    std::cout << "Pinned host alloc:           " << pinned_alloc_ms<< " ms\n";
+    std::cout << "D2H into pinned (async):     " << pinned_d2h_ms  << " ms\n";
+    std::cout << "Pinned -> vector insert:     " << pinned_to_vec_ms << " ms\n";
+    std::cout << "Re-seed d_index (all rounds):" << reseed_ms      << " ms\n";
+    std::cout << "cudaFree(d_sa):              " << free_ms        << " ms\n";
+    std::cout << "===================================\n";
 }
-
-
 
 // Optionally print suffix array output for debugging
 template <typename SA_t>
@@ -47,6 +88,7 @@ void dump_sa(const std::vector<SA_t>& sa,
     std::cout.flush();
 }
 
+#endif
 
 // Compare two SAs
 template <typename T, typename U>
@@ -115,11 +157,8 @@ int main(int argc, char** argv){
         return 1;
     }
 
-
     // Compute Suffix Array
     err = libcubwt_sa(device_storage, reinterpret_cast<const uint8_t*>(s.data()), SA_cubwt.data(), n);
-    auto cubwt_stop = std::chrono::high_resolution_clock::now();
-    cubwt_monitor.stop();
 
     if (err != LIBCUBWT_NO_ERROR) {
         std::cerr << "libcubwt_sa error\n";
@@ -128,6 +167,9 @@ int main(int argc, char** argv){
 
     // Free device storage used by libcubwt
     libcubwt_free_device_storage(device_storage);
+
+    auto cubwt_stop = std::chrono::high_resolution_clock::now();
+    cubwt_monitor.stop();
 
     auto cubwt_duration = std::chrono::duration_cast<std::chrono::milliseconds>(cubwt_stop - cubwt_start).count();
     std::cout << "libcubwt SA computation time: " << cubwt_duration << " ms\n";
@@ -144,6 +186,7 @@ int main(int argc, char** argv){
 
     prefix_monitor.start();
     auto start = std::chrono::high_resolution_clock::now();
+
     std::vector<uint32_t> SA_pd = build_suffix_array_prefix_doubling(s);
     auto stop = std::chrono::high_resolution_clock::now();
     prefix_monitor.stop();
@@ -155,7 +198,7 @@ int main(int argc, char** argv){
     std::cout << "Peak GPU memory (prefix doubling): " << prefix_monitor.get_peak_usage_mb() << " MB\n\n";
 
     // output the profiler for sections of the prefix doubling
-    print_profiling_summary();
+    print_profiling_summary(static_cast<double>(pd_duration));
 
     /**
      * SDSL (CPU) Suffix Array

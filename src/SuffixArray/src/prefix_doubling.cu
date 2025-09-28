@@ -128,14 +128,6 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
     }
     cudaFree(d_s);
 
-//    if (n <= 64) {
-//        // Optional: show input as text for sanity
-//        std::string s_preview(s.begin(), s.end());
-//        std::cout << "DEBUG s=\"" << s_preview << "\" (n=" << n << ")\n";
-//        print_u32_dev("DEBUG rank[0..n-1] (init)", d_rank, n);
-//        print_u32_dev("DEBUG index[0..n-1] (init)", d_index, n);
-//    }
-
 
     std::cout << "Total GPU Memory Allocated: " << g_allocated / (1024.0 * 1024.0) << " MB\n";
     record_time(g_init_time_ns, t0);
@@ -144,10 +136,12 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
     // Prefix doubling
     for (size_t k = 1; k < n; k <<= 1) {
         // Values must be "suffix i" for the keys built for i this round.
-        {
-            auto d_index_ptr = thrust::device_pointer_cast(d_index);
-            thrust::sequence(thrust::device, d_index_ptr, d_index_ptr + n, 0);
-        }
+//        {
+//            auto t_seed = now();
+//            auto d_index_ptr = thrust::device_pointer_cast(d_index);
+//            thrust::sequence(thrust::device, d_index_ptr, d_index_ptr + n, 0);
+//            record_time(g_index_seed_time_ns, t_seed);
+//        }
 
         // 1) Build packed keys = (R[i], R[i+k]) and values = index, then radix sort_by_key
         {
@@ -163,16 +157,14 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
             // Build keys with a transform – recompute every round from current ranks and k
             thrust::transform(
                     I, I + n, d_keys_ptr,
-                    [R = d_rank, n, k] __device__ (uint32_t i) {
+                    [R = d_rank, idx = d_index, n, k] __device__ (uint32_t j) {
+                        uint32_t i = idx[j];                 // suffix index
                         uint32_t a = R[i];
                         uint32_t b = (i + k < n) ? R[i + k] : 0u;
                         return (uint64_t(a) << 32) | uint64_t(b);
                     });
             record_time(g_build_keys_time_ns, t1);
 
-//            if (n <= 64) {
-//                print_keys_dev(("DEBUG keys before sort (k=" + std::to_string(k) + ")").c_str(), d_keys, n);
-//            }
 
 
             // 2) Radix sort_by_key: keys determine order, d_index rides along
@@ -180,10 +172,6 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
             thrust::sort_by_key(d_keys_ptr, d_keys_ptr + n, d_index_ptr);
             record_time(g_sort_time_ns, t2);
 
-//            if (n <= 64) {
-//                print_keys_dev(("DEBUG keys after  sort (k=" + std::to_string(k) + ")").c_str(), d_keys, n);
-//                print_u32_dev(("DEBUG index after sort (k=" + std::to_string(k) + ")").c_str(), d_index, n);
-//            }
 
         }
 
@@ -200,11 +188,6 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
             thrust::inclusive_scan(d_diff_ptr, d_diff_ptr + n, d_diff_ptr);
             record_time(g_scan_time_ns, t4);
 
-//            if (n <= 64) {
-//                // d_diff now holds inclusive group IDs (1..G)
-//                print_u32_dev(("DEBUG diff (group IDs) (k=" + std::to_string(k) + ")").c_str(), d_diff, n);
-//            }
-
         }
 
         // 4) assign new ranks => rank[index[i]] = d_diff[i]
@@ -213,23 +196,11 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         record_time(g_assign_time_ns, t5);
 
-//        if (n <= 64) {
-//            print_u32_dev(("DEBUG rank after assign (k=" + std::to_string(k) + ")").c_str(), d_rank, n);
-//        }
-
-
-
         // 5) check if all ranks are distinct => if d_diff[n-1] == n
         auto t6 = now();
         uint32_t max_rank;
         CHECK_CUDA_ERROR(cudaMemcpy(&max_rank, d_diff + (n - 1), sizeof(uint32_t), cudaMemcpyDeviceToHost));
         record_time(g_copy_chk_time_ns, t6);
-
-//        if (n <= 64) {
-//            std::cout << "DEBUG max_rank=" << max_rank
-//                      << "  (k=" << k << ")\n";
-//        }
-
 
         // all ranks are distinct -> done
         if (max_rank == static_cast<uint32_t>(n)) {
@@ -238,16 +209,10 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
     }
 
     // Clean up
-    auto t8 = now();
-    cudaFree(d_rank);
-    cudaFree(d_diff);
-    cudaFree(d_keys);
-    record_time(g_cleanup_time_ns, t8);
+    cudaFreeAsync(d_rank);
+    cudaFreeAsync(d_diff);
+    cudaFreeAsync(d_keys);
 
-//    if (n <= 64) {
-//        // d_index is the SA we’re returning
-//        print_u32_dev("DEBUG FINAL SA (d_index)", d_index, n);
-//    }
     return d_index; // caller owns d_index and must free
 }
 
@@ -259,24 +224,33 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     std::vector<uint32_t> host_sa;
     if (s.empty()) return host_sa;
 
+    // Compute SA on device
+    auto t_compute_sa = now();
     uint32_t* d_sa = build_suffix_array_prefix_doubling_device(s);
+    record_time(g_compute_sa_time_ns), t_compute_sa);
 
-    const size_t n     = s.size();
-    const size_t bytes = n * sizeof(uint32_t);
 
-    auto t0 = now();
+    // 1) Pinned host staging buffer
+    auto t_pin_alloc = now();
+    uint32_t* h_pinned = nullptr;
+    size_t bytes = s.size() * sizeof(uint32_t);
+    CHECK_CUDA_ERROR(cudaMallocHost((void**)&h_pinned, bytes));
+    record_time(g_pinned_alloc_time_ns, t_pin_alloc);
 
-    host_sa.resize(n);
-    // Pin the vector's memory to avoid the pageable staging path
-    CHECK_CUDA_ERROR(cudaHostRegister(host_sa.data(), bytes, cudaHostRegisterDefault));
+    // 2) Async D2H into pinned buffer
+    auto t_d2h = now();
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(h_pinned, d_sa, bytes, cudaMemcpyDeviceToHost, 0));
+    CHECK_CUDA_ERROR(cudaStreamSynchronize(0));
+    record_time(g_pinned_d2h_time_ns, t_d2h);
 
-    // One big DMA at full speed
-    CHECK_CUDA_ERROR(cudaMemcpy(host_sa.data(), d_sa, bytes, cudaMemcpyDeviceToHost));
+    // 3) Build vector without zero-fill (one write)
+    auto t_to_vec = now();
+    host_sa.reserve(s.size());                     // raw allocation, no element init
+    host_sa.insert(host_sa.end(), h_pinned, h_pinned + s.size()); // single memcpy
+    record_time(g_pinned_to_vec_time_ns, t_to_vec);
 
-    record_time(g_copy_back_time_ns, t0);
-
-    CHECK_CUDA_ERROR(cudaHostUnregister(host_sa.data()));
-    cudaFree(d_sa);
+    // 4) Cleanup
+    CHECK_CUDA_ERROR(cudaFreeAsync(d_sa));
 
     return host_sa;
 }
