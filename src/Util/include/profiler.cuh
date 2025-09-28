@@ -2,6 +2,10 @@
 
 #include <chrono>
 
+#ifndef SA_DEBUG
+#define SA_DEBUG 1
+#endif
+
 #ifdef SA_DEBUG
 inline uint64_t g_init_time_ns;          // H2D + initial sequence/transform
 inline uint64_t g_build_keys_time_ns;    // thrust::transform building keys
