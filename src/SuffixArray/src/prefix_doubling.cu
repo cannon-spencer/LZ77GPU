@@ -26,11 +26,12 @@ void init_index_rank_kernel_template(const uint8_t* d_s, T* d_index, T* d_rank, 
 
 template<typename T>
 __global__
-void pack_keys_kernel_template(const T* d_rank, size_t n, size_t k, T* key_hi, T* key_lo){
+void pack_keys_kernel_template(const T* d_rank, const T* d_index,size_t n, size_t k, T* key_hi, T* key_lo){
     size_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
-        key_hi[i] = d_rank[i];
-        key_lo[i] = (i + k < n) ? d_rank[i + k] : static_cast<T>(0);
+        T suffix = d_index[i];
+        key_hi[i] = d_rank[suffix];
+        key_lo[i] = (suffix+ k < n) ? d_rank[suffix + k] : static_cast<T>(0);
     }
 }
 
@@ -145,7 +146,7 @@ T* build_suffix_array_prefix_doubling_template(const std::vector<uint8_t>& s, si
         {
             auto t2 = now();
             pack_keys_kernel_template<<<gridSize, blockSize>>>(
-            d_rank, n, k,
+            d_rank, d_index, n, k,
             d_diff,
             thrust::raw_pointer_cast(d_key_lo.data()));
             CHECK_CUDA_ERROR(cudaGetLastError());
