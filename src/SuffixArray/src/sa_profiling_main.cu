@@ -14,17 +14,19 @@
 #include "prefix_doubling.cuh"
 
 void print_profiling_summary() {
-    std::cout << "==== Profiling Summary ====\n";
-    std::cout << "Initialization time:      " << g_alloc_time_ns / 1e6 << " ms\n";
-    std::cout << "Total Sort time:          " << g_sort_time_ns / 1e6 << " ms\n";
-    std::cout << "Compute Diff Kernel time: " << g_kernel_diff_time_ns / 1e6 << " ms\n";
-    std::cout << "Inclusive Scan time:      " << g_scan_time_ns / 1e6 << " ms\n";
-    std::cout << "Assign Ranks Kernel time: " << g_kernel_assign_time_ns / 1e6 << " ms\n";
-    std::cout << "Max Rank Host Copy time:  " << g_copy_time_ns / 1e6 << " ms\n";
-    std::cout << "Deallocation time:        " << g_cleanup_time_ns / 1e6 << " ms\n";
-    std::cout << "===========================\n";
+    std::cout << "==== Prefix Doubling Profiling ====\n";
+    std::cout << "Init (H2D + seed ranks/idx):  " << g_init_time_ns       / 1e6 << " ms\n";
+    std::cout << "Index seeding time:           " << g_index_seed_time_ns / 1e6 << " ms\n";
+    std::cout << "Build keys (transform):       " << g_build_keys_time_ns / 1e6 << " ms\n";
+    std::cout << "Radix sort_by_key:            " << g_sort_time_ns       / 1e6 << " ms\n";
+    std::cout << "Head-flags (diff) kernel:     " << g_diff_time_ns       / 1e6 << " ms\n";
+    std::cout << "Inclusive scan:               " << g_scan_time_ns       / 1e6 << " ms\n";
+    std::cout << "Assign ranks kernel:          " << g_assign_time_ns     / 1e6 << " ms\n";
+    std::cout << "Termination check memcpy:     " << g_copy_chk_time_ns   / 1e6 << " ms\n";
+    std::cout << "Final SA copy (D2H):          " << g_copy_back_time_ns  / 1e6 << " ms\n";
+    std::cout << "SA compute time (excl. copy): " << g_compute_sa_time_ns / 1e6 << " ms\n";
+    std::cout << "===================================\n";
 }
-
 
 // Optionally print suffix array output for debugging
 template <typename SA_t>
@@ -44,7 +46,6 @@ void dump_sa(const std::vector<SA_t>& sa,
     std::cout.flush();
 }
 
-
 // Compare two SAs
 template <typename T, typename U>
 bool compare_SA(const std::vector<T>& sa1, const std::vector<U>& sa2) {
@@ -60,6 +61,12 @@ bool compare_SA(const std::vector<T>& sa1, const std::vector<U>& sa2) {
 }
 
 int main(int argc, char** argv){
+    std::cout << R"(
+        ============================================================
+                      PREFIX DOUBLING DEBUG PROGRAM
+        ============================================================
+    )" << std::endl;
+
     /**
      *  READ THE INPUT FILE
      * */
@@ -106,11 +113,8 @@ int main(int argc, char** argv){
         return 1;
     }
 
-
     // Compute Suffix Array
     err = libcubwt_sa(device_storage, reinterpret_cast<const uint8_t*>(s.data()), SA_cubwt.data(), n);
-    auto cubwt_stop = std::chrono::high_resolution_clock::now();
-    cubwt_monitor.stop();
 
     if (err != LIBCUBWT_NO_ERROR) {
         std::cerr << "libcubwt_sa error\n";
@@ -119,6 +123,9 @@ int main(int argc, char** argv){
 
     // Free device storage used by libcubwt
     libcubwt_free_device_storage(device_storage);
+
+    auto cubwt_stop = std::chrono::high_resolution_clock::now();
+    cubwt_monitor.stop();
 
     auto cubwt_duration = std::chrono::duration_cast<std::chrono::milliseconds>(cubwt_stop - cubwt_start).count();
     std::cout << "libcubwt SA computation time: " << cubwt_duration << " ms\n";
@@ -135,6 +142,7 @@ int main(int argc, char** argv){
 
     prefix_monitor.start();
     auto start = std::chrono::high_resolution_clock::now();
+
     std::vector<uint32_t> SA_pd = build_suffix_array_prefix_doubling(s);
     auto stop = std::chrono::high_resolution_clock::now();
     prefix_monitor.stop();
@@ -189,8 +197,8 @@ int main(int argc, char** argv){
         std::cout << "ERROR: The suffix arrays do NOT match.\n";
 
         // debug print the arrays
-        dump_sa(SA_pd,    "Prefix-doubling SA", SA_pd.size());
-        dump_sa(SA_cubwt, "libcubwt SA",        SA_cubwt.size());
+        //dump_sa(SA_pd,    "Prefix-doubling SA", SA_pd.size());
+        //dump_sa(SA_cubwt, "libcubwt SA",        SA_cubwt.size());
     }
 
     return 0;
