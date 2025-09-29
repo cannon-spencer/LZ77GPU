@@ -13,9 +13,6 @@
 #include "libcubwt.cuh"
 #include "prefix_doubling.cuh"
 
-
-#ifdef SA_DEBUG
-
 void print_profiling_summary() {
     std::cout << "==== Prefix Doubling Profiling ====\n";
     std::cout << "Init (H2D + seed ranks/idx):  " << g_init_time_ns       / 1e6 << " ms\n";
@@ -48,8 +45,6 @@ void dump_sa(const std::vector<SA_t>& sa,
     }
     std::cout.flush();
 }
-
-#endif
 
 // Compare two SAs
 template <typename T, typename U>
@@ -100,7 +95,7 @@ int main(int argc, char** argv){
     /**
     * LIBCUBWT TESTING
     **/
-    /*
+
     // Re-init tracker for libcubwt phase
     MemoryMonitor cubwt_monitor;
 
@@ -137,7 +132,7 @@ int main(int argc, char** argv){
 
     // final peak usage for libcubwt
     std::cout << "Peak GPU memory (libcubwt): " << cubwt_monitor.get_peak_usage_mb() << " MB\n\n";
-    */
+
     /**
      * PREFIX DOUBLING
      **/

@@ -17,17 +17,6 @@
 #include "cuda_utils.cuh"
 #include "profiler.cuh"
 
-//TODO add this for timing stuff
-//#ifdef DEBUG
-//#define DEBUG_LOG(x) (std::cerr << (x) << std::endl)
-//#else
-//#define DEBUG_LOG(x)
-//#endif
-//
-//// Usage:
-//DEBUG_LOG("Value of variable 'myVar': " << myVar);
-
-
 /**
  * Kernel to compute the "diff" (head-flags) by comparing consecutive sorted KEYS:
  * If sorted suffix i differs from suffix i-1, set diff[i] = 1 else 0.
@@ -86,7 +75,7 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
     uint32_t* d_index = nullptr;
     uint32_t* d_diff  = nullptr;
 
-    auto t0 = now();
+    SA_DEBUG_START(t0);
     myCudaMalloc(&d_rank,  n * sizeof(uint32_t), "d_rank");
     myCudaMalloc(&d_index, n * sizeof(uint32_t), "d_index");
     myCudaMalloc(&d_diff,  n * sizeof(uint32_t), "d_diff");
@@ -105,7 +94,7 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
 
     // Initialize d_rank from input string (promote to uint32 + 1)
     {
-        auto s_ptr   = thrust::device_pointer_cast(d_s);
+        auto s_ptr = thrust::device_pointer_cast(d_s);
         auto d_rank_ptr = thrust::device_pointer_cast(d_rank);
         thrust::transform(thrust::device,
                           s_ptr, s_ptr + n,
@@ -116,24 +105,21 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
     }
     cudaFreeAsync(d_s, 0);
 
-    std::cout << "Total GPU Memory Allocated: " << g_allocated / (1024.0 * 1024.0) << " MB\n";
-    record_time(g_init_time_ns, t0);
-
+    SA_DEBUG_LOG("Total GPU Memory Allocated: " << (g_allocated / (1024.0 * 1024.0)) << " MB");
+    SA_DEBUG_END(g_init_time_ns, t0);
 
     // Prefix doubling
     for (size_t k = 1; k < n; k <<= 1) {
         // Values must be "suffix i" for the keys built for i this round.
         {
-            auto t_seed = now();
+            SA_DEBUG_START(t1);
             auto d_index_ptr = thrust::device_pointer_cast(d_index);
             thrust::sequence(thrust::device, d_index_ptr, d_index_ptr + n, 0);
-            record_time(g_index_seed_time_ns, t_seed);
+            SA_DEBUG_END(g_index_seed_time_ns, t1);
         }
 
         // 1) Build packed keys = (R[i], R[i+k]) and values = index, then radix sort_by_key
         {
-            auto t1 = now();
-
             // define a range of sequential values
             thrust::counting_iterator<uint32_t> I(0);
 
@@ -142,6 +128,7 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
             auto d_index_ptr = thrust::device_pointer_cast(d_index);
 
             // Build keys with a transform – recompute every round from current ranks and k
+            SA_DEBUG_START(t2);
             thrust::transform(
                     I, I + n, d_keys_ptr,
                     [R = d_rank, n, k] __device__ (uint32_t i) {
@@ -149,28 +136,26 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
                         uint32_t b = (i + k < n) ? R[i + k] : 0u;
                         return (uint64_t(a) << 32) | uint64_t(b);
                     });
-            record_time(g_build_keys_time_ns, t1);
+            SA_DEBUG_END(g_build_keys_time_ns, t2);
 
             // 2) Radix sort_by_key: keys determine order, d_index rides along
-            auto t2 = now();
+            SA_DEBUG_START(t3);
             thrust::sort_by_key(d_keys_ptr, d_keys_ptr + n, d_index_ptr);
-            record_time(g_sort_time_ns, t2);
-
-
+            SA_DEBUG_END(g_sort_time_ns, t3);
         }
 
         // 2) compute head-flags (diff) directly from sorted keys
-        auto t3 = now();
+        SA_DEBUG_START(t4);
         compute_diff_from_keys<<<gridSize, blockSize>>>(d_keys, d_diff, n);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        record_time(g_diff_time_ns, t3);
+        SA_DEBUG_END(g_diff_time_ns, t4);
 
         // 3) inclusive scan => group IDs
         {
-            auto t4 = now();
+            SA_DEBUG_START(t5);
             thrust::device_ptr<uint32_t> d_diff_ptr = thrust::device_pointer_cast(d_diff);
             thrust::inclusive_scan(d_diff_ptr, d_diff_ptr + n, d_diff_ptr);
-            record_time(g_scan_time_ns, t4);
+            SA_DEBUG_END(g_scan_time_ns, t5);
 
         }
 
@@ -184,16 +169,16 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
             auto d_diff_ptr  = thrust::device_pointer_cast(d_diff);
             auto d_rank_ptr  = thrust::device_pointer_cast(d_rank);
 
-            auto t5 = now();
+            SA_DEBUG_START(t6);
             thrust::scatter(thrust::device, d_diff_ptr, d_diff_ptr + n, d_index_ptr, d_rank_ptr);
-            record_time(g_assign_time_ns, t5);
+            SA_DEBUG_END(g_assign_time_ns, t6);
         }
 
         // 5) check if all ranks are distinct => if d_diff[n-1] == n
-        auto t6 = now();
+        SA_DEBUG_START(t7);
         uint32_t max_rank;
         CHECK_CUDA_ERROR(cudaMemcpy(&max_rank, d_diff + (n - 1), sizeof(uint32_t), cudaMemcpyDeviceToHost));
-        record_time(g_copy_chk_time_ns, t6);
+        SA_DEBUG_END(g_copy_chk_time_ns, t7);
 
         // all ranks are distinct -> done
         if (max_rank == static_cast<uint32_t>(n)) {
@@ -218,15 +203,15 @@ std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8
     if (s.empty()) return host_sa;
 
     // Compute SA on device
-    auto t_compute_sa = now();
+    SA_DEBUG_START(t0);
     uint32_t* d_sa = build_suffix_array_prefix_doubling_device(s);
-    record_time(g_compute_sa_time_ns, t_compute_sa);
+    SA_DEBUG_END(g_compute_sa_time_ns, t0);
 
-    //
-    auto t7 = now();
+    // Allocate host memory & transfer SA back to host (this is kind of slow)
+    SA_DEBUG_START(t1);
     host_sa.resize(s.size());
     CHECK_CUDA_ERROR(cudaMemcpy(host_sa.data(), d_sa, s.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    record_time(g_copy_back_time_ns, t7);
+    SA_DEBUG_END(g_copy_back_time_ns, t1);
 
     cudaFreeAsync(d_sa, 0);
 
