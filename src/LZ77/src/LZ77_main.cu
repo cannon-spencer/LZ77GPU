@@ -13,168 +13,156 @@
 #include "prefix_doubling.cuh"
 #include "LZ77_processor.cuh"
 
+
+
 /**
- * Check if GPU memory is sufficient for processing large files
- * @param file_size Size of the input file in bytes
- * @param sa_type String indicating SA data type ("uint32_t" or "size_t")
- * @return true if GPU has enough memory, false otherwise
+ * Calculate required GPU memory for full GPU processing
+ * @param length Number of elements (text length)
+ * @param sa_size Size of SA element (sizeof(uint32_t) or sizeof(size_t))
+ * @return Required memory in bytes
  */
-bool checkGPUMemoryForLargeFile(size_t file_size, const std::string& sa_type) {
-    size_t free_mem, total_mem;
-    cudaMemGetInfo(&free_mem, &total_mem);
-    
-    // memory usage expectation: 3 * SA + 1 * uint8_t + 2 * SA (PSV/NSV) + 20% buffer
-    size_t sa_size = (sa_type == "uint32_t") ? sizeof(uint32_t) : sizeof(size_t);
-    size_t required_mem = file_size * (3 * sa_size + sizeof(uint8_t) + 2 * sa_size) * 1.2;
-    
-    std::cout << "GPU Memory Check for " << sa_type << ":" << std::endl;
-    std::cout << "  Available: " << free_mem / (1024*1024*1024.0) << " GB" << std::endl;
-    std::cout << "  Required: " << required_mem / (1024*1024*1024.0) << " GB" << std::endl;
-    
-    return free_mem > required_mem;
+size_t calculateRequiredMemory(size_t length, size_t sa_size) {
+    // Memory usage:
+    // - SA on GPU: 1 * length * sa_size (will be constructed)
+    // - PSV/NSV output: 2 * length * sa_size
+    // - Temp buffer for scatter: 1 * length * sa_size
+    // - Block mins: ~num_blocks * sa_size (~0.001 * length * sa_size, negligible)
+    // Total: 4 * length * sa_size
+    // 20% buffer for safety
+    return length * sa_size * 4 * 1.2;
 }
 
+/**
+ * Build suffix array on GPU using prefix_doubling
+ * @param data Input data
+ * @return Device pointer to SA, or nullptr on failure
+ */
+template<typename SA_t>
+SA_t* build_SA_on_GPU(const std::vector<uint8_t>& data) {
+    size_t sa_length;
+    SA_t* d_SA = nullptr;
+
+    if constexpr (std::is_same_v<SA_t, uint32_t>) {
+        d_SA = build_suffix_array_prefix_doubling(data, sa_length);
+    } else if constexpr (std::is_same_v<SA_t, size_t>) {
+        d_SA = build_suffix_array_prefix_doubling_64(data, sa_length);
+    }
+
+    if (!d_SA || sa_length != data.size()) {
+        if (d_SA) cudaFree(d_SA);
+        throw std::runtime_error("Failed to construct suffix array on GPU");
+    }
+
+    return d_SA;
+}
+
+/**
+ * Build suffix array on CPU using SDSL
+ * @param data Input data
+ * @return Host vector containing SA
+ */
+template<typename SA_t>
+std::vector<SA_t> build_SA_on_CPU(const std::vector<uint8_t>& data) {
+    size_t length = data.size();
+    std::vector<SA_t> SA(length);
+
+    if constexpr (std::is_same_v<SA_t, uint32_t>) {
+        sdsl::int_vector<32> sdsl_sa(length);
+        sdsl::algorithm::calculate_sa(static_cast<const unsigned char*>(data.data()), length, sdsl_sa);
+
+        for (size_t i = 0; i < length; ++i) {
+            SA[i] = static_cast<uint32_t>(sdsl_sa[i]);
+        }
+
+    } else if constexpr (std::is_same_v<SA_t, size_t>) {
+        sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
+        sdsl::algorithm::calculate_sa(static_cast<const unsigned char*>(data.data()), length, sdsl_sa);
+        std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
+    }
+
+    return SA;
+}
 
 /**
  * Template function for processing LZ77 compression with different SA data types
- * Supports both uint32_t (for files ≤4GB) and size_t (for large files)
+ * Strategy: Check memory first, then choose SA construction method and processing path
  * @param data Input file data as byte vector
  * @param output_prefix Prefix for output files
  */
 template<typename SA_t>
 void processLZ77(const std::vector<uint8_t>& data, const std::string& output_prefix) {
     size_t length = data.size();
-    
+
+    // Step 1: Check GPU memory to decide which path to take
+    size_t free_mem, total_mem;
+    cudaMemGetInfo(&free_mem, &total_mem);
+
+    size_t required_mem = calculateRequiredMemory(length, sizeof(SA_t));
+
+    std::cout << "\n=== Memory Check ===" << std::endl;
+    std::cout << "GPU Free Memory: " << free_mem / (1024*1024*1024.0) << " GB" << std::endl;
+    std::cout << "Required Memory: " << required_mem / (1024*1024*1024.0) << " GB" << std::endl;
+
     GPUProfiler profiler;
-    profiler.start();
-    
-    if constexpr (std::is_same_v<SA_t, uint32_t>) {
-        // uint32_t path: prioritize GPU prefix_doubling for small files
-        if (length <= UINT32_MAX) {
-            std::cout << "Using 32-bit GPU prefix_doubling..." << std::endl;
-            
-            try {
-                size_t sa_length;
-                uint32_t* d_SA = build_suffix_array_prefix_doubling(data, sa_length);
-                
-                if (d_SA && sa_length == length) {
-                    std::cout << "prefix_doubling SA construction completed, SA remains on GPU" << std::endl;
-                    profiler.stop("Suffix Array Generation");
-                    
-                    PipelinePSVNSVProcessor processor;
-                    
-                    try {
-                        //Use GPU SA for zero-copy processing
-                        processor.template processFullGPUWithGPUSA<uint32_t>(d_SA, data.data(), length, output_prefix);
-                        cudaFree(d_SA);
-                        return; // Fastest path, return immediately
-                    } catch (...) {
-                        cudaFree(d_SA);
-                        throw;
-                    }
-                } else {
-                    if (d_SA) cudaFree(d_SA);
-                    std::cout << "prefix_doubling failed, falling back to SDSL..." << std::endl;
-                }
-                
-            } catch (const std::exception& e) {
-                std::cout << "prefix_doubling exception: " << e.what() 
-                         << ", falling back to SDSL..." << std::endl;
-            }
-        }
-        
-    } else if constexpr (std::is_same_v<SA_t, size_t>) {
-        // New feature: size_t path also attempts GPU prefix_doubling for large files
-        std::cout << "Using 64-bit GPU prefix_doubling for large file..." << std::endl;
-        
-        // Check if GPU memory is sufficient
-        if (checkGPUMemoryForLargeFile(length, "size_t")) {
-            try {
-                size_t sa_length;
-                size_t* d_SA = build_suffix_array_prefix_doubling_64(data, sa_length);
-                
-                if (d_SA && sa_length == length) {
-                    std::cout << "64-bit prefix_doubling SA construction completed, SA remains on GPU" << std::endl;
-                    profiler.stop("Suffix Array Generation");
-                    
-                    PipelinePSVNSVProcessor processor;
-                    
-                    try {
-                        // Use GPU SA for zero-copy processing (size_t version)
-                        processor.template processFullGPUWithGPUSA<size_t>(d_SA, data.data(), length, output_prefix);
-                        cudaFree(d_SA);
-                        return; //Large file GPU path, return immediately
-                    } catch (...) {
-                        cudaFree(d_SA);
-                        throw;
-                    }
-                } else {
-                    if (d_SA) cudaFree(d_SA);
-                    std::cout << "64-bit prefix_doubling failed, falling back to SDSL..." << std::endl;
-                }
-                
-            } catch (const std::exception& e) {
-                std::cout << "64-bit prefix_doubling exception: " << e.what() 
-                         << ", falling back to SDSL..." << std::endl;
-            }
-        } else {
-            std::cout << "Insufficient GPU memory for 64-bit prefix_doubling, using SDSL..." << std::endl;
-        }
-    }
-
-    // Fallback: Use SDSL (for large files or when prefix_doubling fails)
-    std::vector<SA_t> SA(length);
-    
-    if constexpr (std::is_same_v<SA_t, uint32_t>) {
-        try {
-            sdsl::int_vector<32> sdsl_sa(length);
-            sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
-            
-            // Convert from SDSL to uint32_t
-            for (size_t i = 0; i < length; ++i) {
-                SA[i] = static_cast<uint32_t>(sdsl_sa[i]);
-            }
-            std::cout << "SDSL SA construction finished (uint32_t)" << std::endl;
-            
-        } catch (const std::exception& sdsl_e) {
-            std::cerr << "Failed to construct suffix array using SDSL: " << sdsl_e.what() << std::endl;
-            throw;
-        }
-    } else {
-        // Use SDSL for size_t (large files)
-        try {
-            std::cout << "Using SDSL for SA construction (size_t)" << std::endl;
-            sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
-            sdsl::algorithm::calculate_sa(static_cast<const unsigned char *>(data.data()), length, sdsl_sa);
-            std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
-            std::cout << "SDSL SA construction finished (size_t)" << std::endl;
-            
-        } catch (const std::exception& e) {
-            std::cerr << "Failed to construct suffix array using SDSL: " << e.what() << std::endl;
-            throw;
-        }
-    }
-    
-    profiler.stop("Suffix Array Generation");
-    std::cout << "Before processor initialized" << std::endl;
-    
-    // Create templated processor
     PipelinePSVNSVProcessor processor;
-    std::cout << "After processor initialized" << std::endl;
-    
-    // Process with appropriate type using regular process function
-    processor.template process<SA_t>(SA.data(), data.data(), length, output_prefix);
 
+    if (free_mem > required_mem) {
+        // Path 1: Full GPU processing (zero-copy, fastest)
+        std::cout << "\n=== Path 1: Full GPU Mode ===" << std::endl;
+        std::cout << "Building SA on GPU..." << std::endl;
+
+        profiler.start();
+        SA_t* d_SA = build_SA_on_GPU<SA_t>(data);
+        profiler.stop("GPU SA Construction");
+
+        std::cout << "SA construction completed, SA remains on GPU (zero-copy)" << std::endl;
+
+        try {
+            processor.template processFullGPUWithGPUSA<SA_t>(d_SA, data.data(), length, output_prefix);
+            cudaFree(d_SA);
+        } catch (...) {
+            cudaFree(d_SA);
+            throw;
+        }
+
+    } else {
+        // Path 4: Stream processing (memory-limited)
+        std::cout << "\n=== Path 4: Stream Mode ===" << std::endl;
+        std::cout << "Building SA on CPU (SDSL)..." << std::endl;
+
+        profiler.start();
+        std::vector<SA_t> h_SA = build_SA_on_CPU<SA_t>(data);
+        profiler.stop("CPU SA Construction");
+
+        std::cout << "SA construction completed on CPU" << std::endl;
+
+        processor.template processWithStreams<SA_t>(h_SA.data(), data.data(), length, output_prefix);
+    }
 }
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <input_file> <output_prefix>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <input_file> <output_prefix> [options]" << std::endl;
+        std::cerr << "Options:" << std::endl;
+        std::cerr << "  --force-size-t    Force size_t SA type (test 64-bit path)" << std::endl;
         return 1;
     }
 
     std::string input_file = argv[1];
     std::string output_prefix = argv[2];
+
+    // Parse optional flags
+    bool force_size_t = false;
+
+    for (int i = 3; i < argc; ++i) {
+        std::string arg(argv[i]);
+        if (arg == "--force-size-t") {
+            force_size_t = true;
+        } else {
+            std::cerr << "Unknown option: " << arg << std::endl;
+            return 1;
+        }
+    }
 
     std::ifstream file(input_file, std::ios::binary);
 
@@ -199,23 +187,30 @@ int main(int argc, char **argv) {
     std::cout << "Input file size: " << length << " bytes" << std::endl;
 
     try {
-        
-        //GPU memory check and processing path selection
+        // Display GPU info
         size_t free_mem, total_mem;
         cudaMemGetInfo(&free_mem, &total_mem);
-        std::cout << "GPU: " << free_mem / (1024*1024*1024.0) << " GB free / " 
+        std::cout << "GPU: " << free_mem / (1024*1024*1024.0) << " GB free / "
                   << total_mem / (1024*1024*1024.0) << " GB total" << std::endl;
 
-        // Choose SA type based on file size
-        if (length <= UINT32_MAX) {
+        if (force_size_t) {
+            std::cout << "SA Type: size_t (forced, 64-bit)" << std::endl;
+        }
+
+        // Choose SA type based on file size or forced option
+        if (force_size_t || length > UINT32_MAX) {
+            if (length <= UINT32_MAX) {
+                std::cout << "Note: File size fits in uint32_t but using size_t for testing" << std::endl;
+            } else {
+                std::cout << "File size requires size_t, using 64-bit processing" << std::endl;
+            }
+            processLZ77<size_t>(data, output_prefix);
+        } else {
             std::cout << "File size fits in uint32_t, using optimized 32-bit processing" << std::endl;
             processLZ77<uint32_t>(data, output_prefix);
-        } else {
-            std::cout << "File size requires size_t, using 64-bit processing" << std::endl;
-            processLZ77<size_t>(data, output_prefix);
         }
-        
-        std::cout << "LZ77 compression completed successfully" << std::endl;
+
+        std::cout << "\nLZ77 compression completed successfully" << std::endl;
         
     } catch (const std::exception& e) {
         std::cerr << "Error occurred: " << e.what() << std::endl;

@@ -86,40 +86,38 @@ private:
     cudaEvent_t start_event, stop_event;
 };
 
+// Chunk metadata for streaming mode
+template<typename SA_t>
+struct ChunkMetadata {
+    size_t start_offset;
+    size_t chunk_size;
+    SA_t min_value;
+    SA_t max_value;
+    std::vector<size_t> psv_unfound_indices;  // Global indices where PSV not found
+    std::vector<size_t> nsv_unfound_indices;  // Global indices where NSV not found
+};
+
 class PipelinePSVNSVProcessor {
 public:
     PipelinePSVNSVProcessor();
-    
-    template<typename SA_t>
-    void process(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
 
-     template<typename SA_t>
+    // Path 1: Full GPU processing with GPU SA (zero-copy, fastest)
+    template<typename SA_t>
     void processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
+
+    // Path 4: Stream processing with CPU SA (memory-limited)
+    template<typename SA_t>
+    void processWithStreams(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
 
 private:
     GPUProfiler profiler;
     size_t available_memory;
 
     void calculateAvailableMemory();
-    bool canProcessFullGPU(size_t length);
-
-    template<typename SA_t>
-    void processFullGPU(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
-
-    template<typename SA_t>
-    void processWithStreams(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
-
-    template<typename SA_t>
-    void processTextOrder(const SA_t* sa_array, const std::vector<SA_t>& psv_results,
-                        const std::vector<SA_t>& nsv_results, const std::string& output_prefix,
-                        size_t length, const uint8_t* data);
 
     template<typename SA_t>
     void rearrangeTextOrder(const SA_t* sa_array, SA_t* psv, SA_t* nsv,
                             const std::string& output_prefix, size_t length, const uint8_t* data);
-    
-    template<typename SA_t>
-    void convertPSVNSVToTextOrderGPU(SA_t* d_sa_array, SA_t* d_psv_array, SA_t* d_nsv_array, size_t length);
 
     template<typename SA_t>
     std::pair<std::pair<size_t, size_t>, size_t> LZFactor(const uint8_t *data, size_t i, SA_t psv, SA_t nsv, size_t n);
@@ -127,6 +125,18 @@ private:
     template<typename SA_t>
     void ComputeLZ77(const uint8_t *data, SA_t *d_psv_text, SA_t *d_nsv_text, size_t n, std::string file_name);
 
+    // Optimized targeted search with block_min pruning
+    template<typename SA_t>
+    void resolvePSVWithPruning(const SA_t* sa_array, SA_t* psv,
+                               const std::vector<size_t>& unfound_indices,
+                               const std::vector<SA_t>& block_mins,
+                               size_t length, size_t block_size);
+
+    template<typename SA_t>
+    void resolveNSVWithPruning(const SA_t* sa_array, SA_t* nsv,
+                               const std::vector<size_t>& unfound_indices,
+                               const std::vector<SA_t>& block_mins,
+                               size_t length, size_t block_size);
 };
 
 #endif // LZ77_PROCESSOR_CUH
