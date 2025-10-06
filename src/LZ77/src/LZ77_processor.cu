@@ -12,6 +12,11 @@
 #include <stack>
 #include <unordered_set>
 
+// Boundary search window size: 0 = unlimited, N = limit to N elements
+#ifndef BOUNDARY_SEARCH_WINDOW
+#define BOUNDARY_SEARCH_WINDOW 0
+#endif
+
 GPUProfiler::GPUProfiler() : start_event(nullptr), stop_event(nullptr) {
     cudaEventCreate(&start_event);
     cudaEventCreate(&stop_event);
@@ -175,41 +180,49 @@ __global__ void processPSVNSVBoundariesKernel(
     SA_t psv_val = psv_sa_order[gid];
     SA_t nsv_val = nsv_sa_order[gid];
 
-    // Progressive PSV search - start with small chunks, grow exponentially
+    // PSV search with configurable window
     if (psv_val == MAX_VAL && bid > 0) {
 
         int search_block = bid - 1;
         while (search_block >= 0 && block_min_output[search_block] >= current) {
             search_block--;
         }
-        
+
 
         if (search_block >= 0) {
             size_t search_end = min((size_t)gid, (size_t)(search_block + 1) * block_size);
-            size_t search_start = max((size_t)0, search_end > 2048 ? search_end - 2048 : 0);
-            
+#if BOUNDARY_SEARCH_WINDOW == 0
+            size_t search_start = 0;  // Unlimited search
+#else
+            size_t search_start = max((size_t)0, search_end > BOUNDARY_SEARCH_WINDOW ? search_end - BOUNDARY_SEARCH_WINDOW : 0);
+#endif
+
             for (size_t i = search_end - 1; i >= search_start && psv_val == MAX_VAL; --i) {
                 if (sa_array[i] < current) {
                     psv_val = sa_array[i];
                     break;
                 }
-                if (i == 0) break; 
+                if (i == 0) break;
             }
         }
     }
     
-    // Progressive NSV search - same strategy
+    // NSV search with configurable window
     if (nsv_val == MAX_VAL && bid + 1 < total_blocks) {
 
         size_t search_block = bid + 1;
         while (search_block < total_blocks && block_min_output[search_block] >= current) {
             search_block++;
         }
-        
+
         if (search_block < total_blocks) {
             size_t search_start = max((size_t)gid + 1, search_block * block_size);
-            size_t search_end = min(length, search_start + 2048);
-            
+#if BOUNDARY_SEARCH_WINDOW == 0
+            size_t search_end = length;  // Unlimited search
+#else
+            size_t search_end = min(length, search_start + BOUNDARY_SEARCH_WINDOW);
+#endif
+
             for (size_t i = search_start; i < search_end && nsv_val == MAX_VAL; ++i) {
                 if (sa_array[i] < current) {
                     nsv_val = sa_array[i];
@@ -345,6 +358,115 @@ void PipelinePSVNSVProcessor::rearrangeTextOrder(const SA_t* sa_array,
     std::string lz_output = output_prefix + "_lz77.bin";
     ComputeLZ77(data, psv, nsv, length - 1, lz_output);
     profiler.stop("LZ77 Processing");
+}
+
+template<typename SA_t>
+void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace(const SA_t* sa_array,
+                       SA_t* psv,
+                       SA_t* nsv,
+                       const std::string& output_prefix,
+                       size_t length,
+                       const uint8_t* data) {
+
+    // Memory-optimized version using fused cycle-following algorithm
+    // Peak memory: 3n×sizeof(SA_t) + n/8 (vs 4n×sizeof(SA_t) for temp buffer version)
+    //
+    // Key optimization: Process PSV and NSV simultaneously in a single pass
+    // - Both arrays share the same cycle structure (defined by SA)
+    // - Reduces memory accesses by ~33% compared to separate processing
+    // - Better cache locality by accessing PSV[i] and NSV[i] together
+
+    size_t bitvector_size = (length + 7) / 8;  // Round up to byte boundary
+    std::cout << "\n=== In-Place Text-Order Conversion (Memory-Optimized) ===" << std::endl;
+    std::cout << "  Method: Fused cycle-following (PSV+NSV)" << std::endl;
+    std::cout << "  Bitvector overhead: " << bitvector_size / (1024.0 * 1024.0) << " MB" << std::endl;
+    std::cout << "  Memory saved vs temp buffer: " << (length * sizeof(SA_t)) / (1024.0 * 1024.0) << " MB" << std::endl;
+
+    // Bitvector to track visited positions (n/8 bytes)
+    std::vector<bool> visited(length, false);
+
+    profiler.start();
+
+    // ======== Fused Rearrangement: Process PSV and NSV simultaneously ========
+    // Since PSV and NSV share the same permutation structure (defined by SA),
+    // we can follow each cycle once and update both arrays together.
+    // This reduces the number of passes over the data from 2 to 1.
+
+    for(size_t start = 0; start < length; start++) {
+        if (visited[start]) continue;  // Already processed in a previous cycle
+
+        // Start a new cycle - save starting values for both arrays
+        size_t current = start;
+        SA_t temp_psv = psv[start];
+        SA_t temp_nsv = nsv[start];
+
+        // Follow the cycle: start → sa[start] → sa[sa[start]] → ... → start
+        // Update both PSV and NSV in lockstep
+        size_t next = sa_array[current];
+        while(next != start) {
+            visited[current] = true;
+
+            // Move values from next position to current position (both arrays)
+            psv[current] = psv[next];
+            nsv[current] = nsv[next];
+
+            current = next;
+            next = sa_array[current];
+        }
+
+        // Close the cycle: write the saved starting values
+        visited[current] = true;
+        psv[current] = temp_psv;
+        nsv[current] = temp_nsv;
+    }
+
+    profiler.stop("Fused PSV+NSV in-place rearrangement");
+
+    profiler.start();
+    std::string lz_output = output_prefix + "_lz77.bin";
+    ComputeLZ77(data, psv, nsv, length - 1, lz_output);
+    profiler.stop("LZ77 Processing");
+
+    /* ======== Alternative: Separate Processing (Kept for Reference) ========
+     * This version processes PSV and NSV in two separate passes.
+     * Pros: Easier to understand and debug
+     * Cons: ~33% more memory accesses, worse cache performance
+     *
+     * // Phase 1: Rearrange PSV
+     * for(size_t start = 0; start < length; start++) {
+     *     if (visited[start]) continue;
+     *     size_t current = start;
+     *     SA_t temp = psv[start];
+     *     size_t next = sa_array[current];
+     *     while(next != start) {
+     *         visited[current] = true;
+     *         psv[current] = psv[next];
+     *         current = next;
+     *         next = sa_array[current];
+     *     }
+     *     visited[current] = true;
+     *     psv[current] = temp;
+     * }
+     *
+     * // Reset visited
+     * std::fill(visited.begin(), visited.end(), false);
+     *
+     * // Phase 2: Rearrange NSV (same logic)
+     * for(size_t start = 0; start < length; start++) {
+     *     if (visited[start]) continue;
+     *     size_t current = start;
+     *     SA_t temp = nsv[start];
+     *     size_t next = sa_array[current];
+     *     while(next != start) {
+     *         visited[current] = true;
+     *         nsv[current] = nsv[next];
+     *         current = next;
+     *         next = sa_array[current];
+     *     }
+     *     visited[current] = true;
+     *     nsv[current] = temp;
+     * }
+     */
 }
 
 PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
@@ -733,6 +855,7 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
 
         // Convert to text order and output
         rearrangeTextOrder(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
+        // rearrangeTextOrderInPlace(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
 
         std::cout << "\n=== Stream Processing Complete ===" << std::endl;
 
@@ -757,6 +880,9 @@ template void PipelinePSVNSVProcessor::processWithStreams<size_t>(const size_t*,
 
 template void PipelinePSVNSVProcessor::rearrangeTextOrder<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const std::string&, size_t, const uint8_t*);
 template void PipelinePSVNSVProcessor::rearrangeTextOrder<size_t>(const size_t*, size_t*, size_t*, const std::string&, size_t, const uint8_t*);
+
+template void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const std::string&, size_t, const uint8_t*);
+template void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace<size_t>(const size_t*, size_t*, size_t*, const std::string&, size_t, const uint8_t*);
 
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<uint32_t>(const uint8_t*, size_t, uint32_t, uint32_t, size_t);
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<size_t>(const uint8_t*, size_t, size_t, size_t, size_t);

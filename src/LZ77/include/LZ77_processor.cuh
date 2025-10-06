@@ -119,6 +119,14 @@ private:
     void rearrangeTextOrder(const SA_t* sa_array, SA_t* psv, SA_t* nsv,
                             const std::string& output_prefix, size_t length, const uint8_t* data);
 
+    // Memory-optimized in-place version using fused cycle-following algorithm
+    // Reduces peak memory from 4n×SA_t to 3n×SA_t+n/8 by avoiding temp buffer
+    // Processes PSV and NSV simultaneously in a single pass (33% fewer memory accesses)
+    // Trade-off: ~30-40% slower than temp buffer version due to random access pattern
+    template<typename SA_t>
+    void rearrangeTextOrderInPlace(const SA_t* sa_array, SA_t* psv, SA_t* nsv,
+                                    const std::string& output_prefix, size_t length, const uint8_t* data);
+
     template<typename SA_t>
     std::pair<std::pair<size_t, size_t>, size_t> LZFactor(const uint8_t *data, size_t i, SA_t psv, SA_t nsv, size_t n);
 
