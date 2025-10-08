@@ -392,32 +392,38 @@ void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace(const SA_t* sa_array,
     // we can follow each cycle once and update both arrays together.
     // This reduces the number of passes over the data from 2 to 1.
 
-    for(size_t start = 0; start < length; start++) {
-        if (visited[start]) continue;  // Already processed in a previous cycle
+    for(size_t sa_pos = 0; sa_pos < length; sa_pos++) {
+        if (visited[sa_pos]) continue;  // Already processed in a previous cycle
 
-        // Start a new cycle - save starting values for both arrays
-        size_t current = start;
-        SA_t temp_psv = psv[start];
-        SA_t temp_nsv = nsv[start];
+        // We want to perform: psv_text[sa[i]] = psv_sa[i]
+        // Start from SA position sa_pos, save its value
+        size_t current_sa = sa_pos;
+        SA_t temp_psv = psv[current_sa];
+        SA_t temp_nsv = nsv[current_sa];
 
-        // Follow the cycle: start → sa[start] → sa[sa[start]] → ... → start
-        // Update both PSV and NSV in lockstep
-        size_t next = sa_array[current];
-        while(next != start) {
-            visited[current] = true;
+        // Follow the cycle: write psv_sa[current_sa] to position sa[current_sa]
+        size_t text_pos = sa_array[current_sa];
+        while(text_pos != sa_pos) {
+            visited[current_sa] = true;
 
-            // Move values from next position to current position (both arrays)
-            psv[current] = psv[next];
-            nsv[current] = nsv[next];
+            // Write current values to text position, then read from text position for next iteration
+            SA_t next_psv = psv[text_pos];
+            SA_t next_nsv = nsv[text_pos];
 
-            current = next;
-            next = sa_array[current];
+            psv[text_pos] = temp_psv;
+            nsv[text_pos] = temp_nsv;
+
+            // Move to next position in cycle
+            temp_psv = next_psv;
+            temp_nsv = next_nsv;
+            current_sa = text_pos;
+            text_pos = sa_array[current_sa];
         }
 
-        // Close the cycle: write the saved starting values
-        visited[current] = true;
-        psv[current] = temp_psv;
-        nsv[current] = temp_nsv;
+        // Close the cycle: write the saved values to the starting position
+        visited[current_sa] = true;
+        psv[text_pos] = temp_psv;
+        nsv[text_pos] = temp_nsv;
     }
 
     profiler.stop("Fused PSV+NSV in-place rearrangement");
@@ -854,8 +860,8 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
         std::cout << "\n=== Phase 3: SA-order to Text-order Conversion ===" << std::endl;
 
         // Convert to text order and output
-        rearrangeTextOrder(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
-        // rearrangeTextOrderInPlace(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
+        // rearrangeTextOrder(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
+        rearrangeTextOrderInPlace(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
 
         std::cout << "\n=== Stream Processing Complete ===" << std::endl;
 
