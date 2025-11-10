@@ -8,77 +8,42 @@
 #include <thrust/sort.h>
 #include <thrust/scan.h>
 #include <thrust/iterator/zip_iterator.h>
+#include <thrust/iterator/permutation_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <thrust/tuple.h>
 #include <thrust/transform.h>
 #include <thrust/sequence.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/host_vector.h>
+#include <thrust/copy.h>
 
 #include "cuda_utils.cuh"
 #include "profiler.cuh"
-
-/**
- * Kernel to compute the "diff" (head-flags) by comparing consecutive sorted KEYS:
- * If sorted suffix i differs from suffix i-1, set diff[i] = 1 else 0.
- * The first suffix i=0 is always a new group => diff[0] = 1.
- */
-__global__
-void compute_diff_from_keys(const uint64_t* keys, uint32_t* diff, size_t n) {
-    uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        diff[i] = (i == 0) ? 1u : (keys[i] != keys[i - 1]);
-    }
-}
-
-
-/**
- * Kernel to assign new ranks from the inclusive-scan "group ID" (d_diff).
- * The sorted order is in d_index, so suffix i in sorted order => d_index[i].
- * We'll do: rank[d_index[i]] = d_diff[i].
- */
-__global__
-void assign_ranks_kernel(const uint32_t* d_index, const uint32_t* d_diff, uint32_t* d_rank, size_t n){
-    uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        uint32_t suffix = d_index[i];
-        d_rank[suffix] = d_diff[i];
-    }
-}
-
 
 /**
  * Build suffix array with prefix doubling, no SuffixKey array.
  * We'll store:
  *   - d_rank[n]  - the rank array
  *   - d_index[n] - the suffix ordering
- *   - d_diff[n]  - difference array, scanned to get group IDs
  *
  * Steps per iteration:
  *   1) Build packed keys: key[i] = pack(R[i], R[i+k]). Values = d_index (suffix i).
  *   2) Run thrust::sort_by_key(keys, d_index).
- *   3) compute_diff_from_keys => d_diff[i] in {0,1} (head-flags where key changes).
- *   4) inclusive_scan(d_diff).
- *   5) assign_ranks_kernel => rank[suffixIndex] = groupID
- *   6) if d_diff[n-1] == n, break early
+ *   3) inclusive_scan of on-the-fly head flags, writing directly to d_rank[d_index[i]].
+ *   4) if max rank == n, break early
  */
 uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& s){
     size_t n = s.size();
     if (n == 0) return nullptr;
 
-    // Kernel config
-    int blockSize = 1024;
-    int gridSize  = static_cast<int>((n + blockSize - 1) / blockSize);
-
     // Allocate device arrays
     uint64_t* d_keys  = nullptr;
     uint32_t* d_rank  = nullptr;
     uint32_t* d_index = nullptr;
-    uint32_t* d_diff  = nullptr;
 
     SA_DEBUG_START(t0);
     myCudaMalloc(&d_rank,  n * sizeof(uint32_t), "d_rank");
     myCudaMalloc(&d_index, n * sizeof(uint32_t), "d_index");
-    myCudaMalloc(&d_diff,  n * sizeof(uint32_t), "d_diff");
     myCudaMalloc(&d_keys,  n * sizeof(uint64_t), "d_keys");
 
     // Upload input s[] to GPU
@@ -144,40 +109,29 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
             SA_DEBUG_END(g_sort_time_ns, t3);
         }
 
-        // 2) compute head-flags (diff) directly from sorted keys
+        // 3) inclusive scan of head flags => new ranks directly in-place
+        auto counting_begin = thrust::make_counting_iterator<uint32_t>(0);
         SA_DEBUG_START(t4);
-        compute_diff_from_keys<<<gridSize, blockSize>>>(d_keys, d_diff, n);
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        auto head_flags_begin = thrust::make_transform_iterator(
+                counting_begin,
+                [keys = d_keys] __device__ (uint32_t i) {
+                    if (i == 0) return 1u;
+                    return (keys[i] != keys[i - 1]) ? 1u : 0u;
+                });
+        auto head_flags_end = head_flags_begin + n;
+        auto d_rank_ptr = thrust::device_pointer_cast(d_rank);
+        auto d_index_ptr = thrust::device_pointer_cast(d_index);
+        auto rank_scatter_begin = thrust::make_permutation_iterator(d_rank_ptr, d_index_ptr);
         SA_DEBUG_END(g_diff_time_ns, t4);
 
-        // 3) inclusive scan => group IDs
-        {
-            SA_DEBUG_START(t5);
-            thrust::device_ptr<uint32_t> d_diff_ptr = thrust::device_pointer_cast(d_diff);
-            thrust::inclusive_scan(d_diff_ptr, d_diff_ptr + n, d_diff_ptr);
-            SA_DEBUG_END(g_scan_time_ns, t5);
-
-        }
-
-        // 4) assign new ranks => rank[index[i]] = d_diff[i]
-//        auto t5 = now();
-//        assign_ranks_kernel<<<gridSize, blockSize>>>(d_index, d_diff, d_rank, n);
-//        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-//        record_time(g_assign_time_ns, t5);
-        {
-            auto d_index_ptr = thrust::device_pointer_cast(d_index);
-            auto d_diff_ptr  = thrust::device_pointer_cast(d_diff);
-            auto d_rank_ptr  = thrust::device_pointer_cast(d_rank);
-
-            SA_DEBUG_START(t6);
-            thrust::scatter(thrust::device, d_diff_ptr, d_diff_ptr + n, d_index_ptr, d_rank_ptr);
-            SA_DEBUG_END(g_assign_time_ns, t6);
-        }
+        SA_DEBUG_START(t5);
+        thrust::inclusive_scan(thrust::device, head_flags_begin, head_flags_end, rank_scatter_begin);
+        SA_DEBUG_END(g_scan_time_ns, t5);
 
         // 5) check if all ranks are distinct => if d_diff[n-1] == n
         SA_DEBUG_START(t7);
-        uint32_t max_rank;
-        CHECK_CUDA_ERROR(cudaMemcpy(&max_rank, d_diff + (n - 1), sizeof(uint32_t), cudaMemcpyDeviceToHost));
+        uint32_t max_rank = 0;
+        thrust::copy_n(rank_scatter_begin + (n - 1), 1, &max_rank);
         SA_DEBUG_END(g_copy_chk_time_ns, t7);
 
         // all ranks are distinct -> done
@@ -188,7 +142,6 @@ uint32_t* build_suffix_array_prefix_doubling_device(const std::vector<uint8_t>& 
 
     // Clean up
     cudaFreeAsync(d_rank, 0);
-    cudaFreeAsync(d_diff, 0);
     cudaFreeAsync(d_keys, 0);
 
     return d_index; // caller owns d_index and must free
