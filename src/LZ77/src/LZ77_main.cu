@@ -77,7 +77,11 @@ std::vector<SA_t> build_SA_on_CPU(const std::vector<uint8_t>& data) {
     } else if constexpr (std::is_same_v<SA_t, size_t>) {
         sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
         sdsl::algorithm::calculate_sa(static_cast<const unsigned char*>(data.data()), length, sdsl_sa);
-        std::memcpy(SA.data(), sdsl_sa.data(), length * sizeof(size_t));
+
+        // Copy element-by-element (sdsl::int_vector is bit-packed, can't use memcpy)
+        for (size_t i = 0; i < length; ++i) {
+            SA[i] = static_cast<size_t>(sdsl_sa[i]);
+        }
     }
 
     return SA;
@@ -136,7 +140,7 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
 
         std::cout << "SA construction completed on CPU" << std::endl;
 
-        processor.template processWithStreams<SA_t>(h_SA.data(), data.data(), length, output_prefix);
+        processor.template processWithStreams<SA_t>(h_SA, data.data(), length, output_prefix);
     }
 }
 

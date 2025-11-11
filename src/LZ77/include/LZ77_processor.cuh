@@ -71,6 +71,7 @@ __global__ void processPSVNSVBoundariesKernel(
     const SA_t* __restrict__ sa_array,
     SA_t* __restrict__ psv_sa_order,
     SA_t* __restrict__ nsv_sa_order,
+    const SA_t* __restrict__ block_min_output,
     const size_t length,
     const size_t block_size
 );
@@ -107,7 +108,7 @@ public:
 
     // Path 4: Stream processing with CPU SA (memory-limited)
     template<typename SA_t>
-    void processWithStreams(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
+    void processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
 
 private:
     GPUProfiler profiler;

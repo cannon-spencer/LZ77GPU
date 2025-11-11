@@ -62,8 +62,10 @@ __global__ void processPSVTasksKernel(
     const size_t pos = positions[tid];
     const SA_t current = sa_array[pos];
     const SA_t MAX_VAL = get_max_value<SA_t>();
-    
-    for (size_t j = end_pos; j-- > start_pos;) {
+
+    // PSV: search backwards from pos-1, bounded by [start_pos, end_pos)
+    size_t search_end = (pos > start_pos) ? pos : start_pos;
+    for (size_t j = search_end; j-- > start_pos;) {
         if (sa_array[j] < current) {
             results[tid] = sa_array[j];
             return;
@@ -87,8 +89,10 @@ __global__ void processNSVTasksKernel(
     const size_t pos = positions[tid];
     const SA_t current = sa_array[pos];
     const SA_t MAX_VAL = get_max_value<SA_t>();
-    
-    for (size_t j = start_pos; j < end_pos; ++j) {
+
+    // NSV: search forwards from pos+1, bounded by [start_pos, end_pos)
+    size_t search_start = (pos + 1 > start_pos) ? (pos + 1) : start_pos;
+    for (size_t j = search_start; j < end_pos; ++j) {
         if (sa_array[j] < current) {
             results[tid] = sa_array[j];
             return;
@@ -428,10 +432,8 @@ void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace(const SA_t* sa_array,
 
     profiler.stop("Fused PSV+NSV in-place rearrangement");
 
-    profiler.start();
-    std::string lz_output = output_prefix + "_lz77.bin";
-    ComputeLZ77(data, psv, nsv, length - 1, lz_output);
-    profiler.stop("LZ77 Processing");
+    // Note: ComputeLZ77 is NOT called here anymore
+    // Caller is responsible for calling ComputeLZ77 after releasing SA to reduce peak memory
 
     /* ======== Alternative: Separate Processing (Kept for Reference) ========
      * This version processes PSV and NSV in two separate passes.
@@ -562,7 +564,7 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
         cudaMemcpy(h_nsv_text_order.data(), d_nsv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
 
         cudaFree(d_combined);  // Free single combined allocation
-        cudaFree(d_sa_array);
+        // Note: d_sa_array is NOT freed here - caller is responsible for freeing it
     }
 
     size_t free_mem_end;
@@ -697,7 +699,8 @@ void PipelinePSVNSVProcessor::resolveNSVWithPruning(
 }
 
 template<typename SA_t>
-void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
+void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
+    const SA_t* sa_ptr = sa_array.data();  // Cache pointer before potential reallocation
     try {
         std::cout << "\n=== Starting Optimized Stream Processing ===" << std::endl;
         profiler.start();
@@ -708,6 +711,15 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
 
         // Align to block size for efficient GPU processing
         max_chunk_size = (max_chunk_size / DEFAULT_BLOCK_SIZE) * DEFAULT_BLOCK_SIZE;
+
+        // Ensure minimum chunk size to avoid divide-by-zero
+        if (max_chunk_size == 0) {
+            throw std::runtime_error(
+                "Insufficient GPU memory for stream processing. "
+                "Available memory: " + std::to_string(available_memory / (1024.0 * 1024.0)) + " MB, "
+                "Minimum required: " + std::to_string((3 * DEFAULT_BLOCK_SIZE * sizeof(SA_t)) / (1024.0 * 1024.0)) + " MB"
+            );
+        }
 
         // Don't exceed file length
         size_t chunk_size = std::min(length, max_chunk_size);
@@ -769,7 +781,7 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
                 cudaMalloc(&d_block_mins, num_blocks * sizeof(SA_t));
 
                 // Upload chunk to GPU
-                cudaMemcpyAsync(d_input, sa_array + offset,
+                cudaMemcpyAsync(d_input, sa_ptr + offset,
                               current_chunk_size * sizeof(SA_t),
                               cudaMemcpyHostToDevice,
                               compute_stream);
@@ -844,13 +856,13 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
 
         // Resolve PSV using targeted search with block_min pruning
         if (!global_psv_unfound.empty()) {
-            resolvePSVWithPruning(sa_array, psv_results.data(), global_psv_unfound,
+            resolvePSVWithPruning(sa_ptr, psv_results.data(), global_psv_unfound,
                                  global_block_mins, length, block_size);
         }
 
         // Resolve NSV using targeted search with block_min pruning
         if (!global_nsv_unfound.empty()) {
-            resolveNSVWithPruning(sa_array, nsv_results.data(), global_nsv_unfound,
+            resolveNSVWithPruning(sa_ptr, nsv_results.data(), global_nsv_unfound,
                                  global_block_mins, length, block_size);
         }
 
@@ -859,9 +871,25 @@ void PipelinePSVNSVProcessor::processWithStreams(const SA_t* sa_array, const uin
         // ======== PHASE 3: Text Order Conversion ========
         std::cout << "\n=== Phase 3: SA-order to Text-order Conversion ===" << std::endl;
 
-        // Convert to text order and output
-        // rearrangeTextOrder(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
-        rearrangeTextOrderInPlace(sa_array, psv_results.data(), nsv_results.data(), output_prefix, length, data);
+        // Convert to text order (PSV/NSV from SA-order to text-order)
+        // Note: rearrangeTextOrderInPlace no longer calls ComputeLZ77
+        rearrangeTextOrderInPlace(sa_ptr, psv_results.data(), nsv_results.data(), output_prefix, length, data);
+
+        // ======== SA Cleanup ========
+        // Critical: Free SA immediately after conversion to reduce peak memory
+        // Peak memory before: SA + PSV + NSV + data + metadata
+        // Peak memory after: PSV + NSV + data + metadata (saves ~57.6 GB for 7.2GB input)
+        size_t sa_memory_mb = (sa_array.size() * sizeof(SA_t)) / (1024.0 * 1024.0);
+        std::cout << "\nReleasing SA (freeing " << sa_memory_mb << " MB)" << std::endl;
+        sa_array.clear();
+        sa_array.shrink_to_fit();
+
+        // ======== PHASE 4: LZ77 Factorization ========
+        std::cout << "\n=== Phase 4: LZ77 Factorization (SA already freed) ===" << std::endl;
+        profiler.start();
+        std::string lz_output = output_prefix + "_lz77.bin";
+        ComputeLZ77(data, psv_results.data(), nsv_results.data(), length - 1, lz_output);
+        profiler.stop("LZ77 Processing");
 
         std::cout << "\n=== Stream Processing Complete ===" << std::endl;
 
@@ -881,8 +909,8 @@ template void PipelinePSVNSVProcessor::resolvePSVWithPruning<size_t>(const size_
 template void PipelinePSVNSVProcessor::resolveNSVWithPruning<uint32_t>(const uint32_t*, uint32_t*, const std::vector<size_t>&, const std::vector<uint32_t>&, size_t, size_t);
 template void PipelinePSVNSVProcessor::resolveNSVWithPruning<size_t>(const size_t*, size_t*, const std::vector<size_t>&, const std::vector<size_t>&, size_t, size_t);
 
-template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(const uint32_t*, const uint8_t*, size_t, const std::string&);
-template void PipelinePSVNSVProcessor::processWithStreams<size_t>(const size_t*, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(std::vector<uint32_t>&, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::processWithStreams<size_t>(std::vector<size_t>&, const uint8_t*, size_t, const std::string&);
 
 template void PipelinePSVNSVProcessor::rearrangeTextOrder<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const std::string&, size_t, const uint8_t*);
 template void PipelinePSVNSVProcessor::rearrangeTextOrder<size_t>(const size_t*, size_t*, size_t*, const std::string&, size_t, const uint8_t*);
