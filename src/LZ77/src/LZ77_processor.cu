@@ -733,8 +733,8 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         size_t cpu_alloc_size = 2 * length * sizeof(SA_t);
         std::cout << "\nCPU Memory Allocation:" << std::endl;
         std::cout << "  PSV + NSV results: " << cpu_alloc_size / (1024.0 * 1024.0) << " MB" << std::endl;
-        std::vector<SA_t> psv_results(length);
-        std::vector<SA_t> nsv_results(length);
+        std::vector<SA_t> psv_results(length, get_max_value<SA_t>());
+        std::vector<SA_t> nsv_results(length, get_max_value<SA_t>());
 
         // Metadata for unfound positions and block minimums
         std::vector<size_t> global_psv_unfound;
