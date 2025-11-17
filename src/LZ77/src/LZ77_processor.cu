@@ -11,6 +11,7 @@
 #include <atomic>
 #include <stack>
 #include <unordered_set>
+#include <stdexcept>
 
 // Boundary search window size: 0 = unlimited, N = limit to N elements
 #ifndef BOUNDARY_SEARCH_WINDOW
@@ -299,8 +300,12 @@ std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor(
 template<typename SA_t>
 void PipelinePSVNSVProcessor::ComputeLZ77(const uint8_t *data, SA_t *d_psv_text, SA_t *d_nsv_text, size_t n, std::string file_name) {
     size_t i = 0;
-    std::vector<std::pair<size_t, size_t>> buffer;
-    
+    std::ofstream out_file(file_name, std::ios::binary);
+
+    if (!out_file) {
+        throw std::runtime_error("Failed to open LZ77 output file");
+    }
+
     while(i < n) {
         SA_t psv = d_psv_text[i];
         SA_t nsv = d_nsv_text[i];
@@ -309,15 +314,11 @@ void PipelinePSVNSVProcessor::ComputeLZ77(const uint8_t *data, SA_t *d_psv_text,
         size_t pos = result.first.first;
         size_t len = result.first.second;
         i = result.second;
-        
-        buffer.push_back(std::make_pair(pos, len));
+    
+        out_file.write(reinterpret_cast<const char*>(&pos), sizeof(size_t));
+        out_file.write(reinterpret_cast<const char*>(&len), sizeof(size_t));
     }
 
-    std::ofstream out_file(file_name, std::ios::binary);
-    for (const auto &lz : buffer) {
-        out_file.write(reinterpret_cast<const char*>(&lz.first), sizeof(size_t));
-        out_file.write(reinterpret_cast<const char*>(&lz.second), sizeof(size_t));
-    }
     out_file.close();
 }
 
@@ -736,6 +737,14 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         std::vector<SA_t> psv_results(length, get_max_value<SA_t>());
         std::vector<SA_t> nsv_results(length, get_max_value<SA_t>());
 
+        size_t sa_memory = sa_array.size() * sizeof(SA_t);
+        size_t input_memory = length * sizeof(uint8_t);
+        double estimated_peak_mb = (cpu_alloc_size + sa_memory + input_memory) / (1024.0 * 1024.0);
+        std::cout << "  Input data (resident in main): " << input_memory / (1024.0 * 1024.0) << " MB" << std::endl;
+        std::cout << "  SA (CPU): " << sa_memory / (1024.0 * 1024.0) << " MB" << std::endl;
+        std::cout << "  Estimated CPU peak before metadata: " << estimated_peak_mb
+                  << " MB (data + SA + PSV + NSV)" << std::endl;
+
         // Metadata for unfound positions and block minimums
         std::vector<size_t> global_psv_unfound;
         std::vector<size_t> global_nsv_unfound;
@@ -744,6 +753,9 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         size_t block_mins_size = total_blocks * sizeof(SA_t);
         std::cout << "  Block mins metadata: " << block_mins_size / (1024.0 * 1024.0) << " MB" << std::endl;
         std::vector<SA_t> global_block_mins(total_blocks);
+        std::cout << "  Estimated CPU peak with metadata: "
+                  << (estimated_peak_mb + block_mins_size / (1024.0 * 1024.0))
+                  << " MB (actual peak may vary with unfound indices)" << std::endl;
 
         // ======== PHASE 1: GPU Chunk Processing + Metadata Collection ========
         std::cout << "\n=== Phase 1: GPU Chunk Processing ===" << std::endl;
@@ -865,6 +877,12 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
             resolveNSVWithPruning(sa_ptr, nsv_results.data(), global_nsv_unfound,
                                  global_block_mins, length, block_size);
         }
+
+        // free metadata vectors
+        global_psv_unfound.clear();
+        global_psv_unfound.shrink_to_fit();
+        global_nsv_unfound.clear();
+        global_nsv_unfound.shrink_to_fit();
 
         profiler.stop("Phase 2: CPU Targeted Search");
 
