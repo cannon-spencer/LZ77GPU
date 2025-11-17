@@ -23,6 +23,8 @@
 
 // Safety guard: upper bound on how many unresolved indices we keep during stream mode
 constexpr size_t UNFOUND_INDEX_THRESHOLD = 20ULL * 1000ULL * 1000ULL;  // 20 million
+// Force stream mode to create at least this many chunks when length >> available GPU memory
+constexpr size_t MIN_STREAM_CHUNKS = 4;
 
 inline size_t countTrailingZeros64(uint64_t value) {
 #if defined(_MSC_VER)
@@ -738,8 +740,17 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
             );
         }
 
-        // Don't exceed file length
+        // Don't exceed file length; optionally split into more chunks to reduce inter-chunk dependencies
         size_t chunk_size = std::min(length, max_chunk_size);
+        if (length > chunk_size) {
+            size_t desired_chunks = (length + chunk_size - 1) / chunk_size;
+            desired_chunks = std::max(desired_chunks, MIN_STREAM_CHUNKS);
+            chunk_size = (length + desired_chunks - 1) / desired_chunks;
+            chunk_size = (chunk_size / DEFAULT_BLOCK_SIZE) * DEFAULT_BLOCK_SIZE;
+            if (chunk_size == 0) {
+                chunk_size = DEFAULT_BLOCK_SIZE;
+            }
+        }
         size_t num_chunks = (length + chunk_size - 1) / chunk_size;
 
         std::cout << "\nConfiguration:" << std::endl;
