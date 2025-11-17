@@ -76,6 +76,15 @@ __global__ void processPSVNSVBoundariesKernel(
     const size_t block_size
 );
 
+template<typename SA_t>
+__global__ void scatterKernel(
+    const SA_t* __restrict__ values,
+    const SA_t* __restrict__ indices,
+    SA_t* __restrict__ output,
+    size_t chunk_size,
+    size_t offset_base
+);
+
 class GPUProfiler {
 public:
     GPUProfiler();
@@ -146,6 +155,10 @@ private:
                                const std::vector<size_t>& unfound_indices,
                                const std::vector<SA_t>& block_mins,
                                size_t length, size_t block_size);
+
+    // GPU streaming text-order conversion for memory-constrained scenarios
+    template<typename SA_t>
+    void convertToTextOrderGPUStreaming(const SA_t* sa_array, SA_t* psv, SA_t* nsv, size_t length);
 };
 
 #endif // LZ77_PROCESSOR_CUH

@@ -183,12 +183,12 @@ __global__ void computePSVNSVKernel(
 
 template<typename SA_t>
 __global__ void processPSVNSVBoundariesKernel(
-    const SA_t* __restrict__ sa_array,     
+    const SA_t* __restrict__ sa_array,
     SA_t* __restrict__ psv_sa_order,
     SA_t* __restrict__ nsv_sa_order,
-    const SA_t* __restrict__ block_min_output, 
+    const SA_t* __restrict__ block_min_output,
     const size_t length,
-    const size_t block_size) 
+    const size_t block_size)
 {
 
     const int tid = threadIdx.x;
@@ -196,7 +196,7 @@ __global__ void processPSVNSVBoundariesKernel(
     const int gid = bid * blockDim.x + tid;
     const SA_t MAX_VAL = get_max_value<SA_t>();
     const size_t total_blocks = (length + block_size - 1) / block_size;
-    
+
     if (gid >= length) return;
 
     const SA_t current = sa_array[gid];
@@ -229,7 +229,7 @@ __global__ void processPSVNSVBoundariesKernel(
             }
         }
     }
-    
+
     // NSV search with configurable window
     if (nsv_val == MAX_VAL && bid + 1 < total_blocks) {
 
@@ -256,6 +256,21 @@ __global__ void processPSVNSVBoundariesKernel(
     }
     psv_sa_order[gid] = psv_val;
     nsv_sa_order[gid] = nsv_val;
+}
+
+template<typename SA_t>
+__global__ void scatterKernel(
+    const SA_t* __restrict__ values,      // PSV/NSV values (SA-order)
+    const SA_t* __restrict__ indices,     // SA array chunk (text positions)
+    SA_t* __restrict__ output,            // Output array (text-order, full length)
+    size_t chunk_size,
+    size_t offset_base                    // Base offset for this chunk in SA
+) {
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= chunk_size) return;
+
+    size_t text_pos = indices[tid];       // Text position from SA[offset_base + tid]
+    output[text_pos] = values[tid];       // Scatter to text position
 }
 
 void PipelinePSVNSVProcessor::calculateAvailableMemory() {
@@ -968,9 +983,8 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         // ======== PHASE 3: Text Order Conversion ========
         std::cout << "\n=== Phase 3: SA-order to Text-order Conversion ===" << std::endl;
 
-        // Convert to text order (PSV/NSV from SA-order to text-order)
-        // Note: rearrangeTextOrderInPlace no longer calls ComputeLZ77
-        rearrangeTextOrderInPlace(sa_ptr, psv_results.data(), nsv_results.data(), output_prefix, length, data);
+        // Convert to text order using GPU streaming (memory-efficient)
+        convertToTextOrderGPUStreaming(sa_ptr, psv_results.data(), nsv_results.data(), length);
 
         // ======== SA Cleanup ========
         // Critical: Free SA immediately after conversion to reduce peak memory
@@ -994,6 +1008,152 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         std::cerr << "Error in stream processing: " << e.what() << std::endl;
         throw;
     }
+}
+
+template<typename SA_t>
+void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
+    const SA_t* sa_array,
+    SA_t* psv,
+    SA_t* nsv,
+    size_t length) {
+
+    profiler.start();
+
+    // Calculate available GPU memory and optimal chunk size
+    size_t free_mem, total_mem;
+    cudaMemGetInfo(&free_mem, &total_mem);
+
+    // Memory requirements per chunk:
+    // - d_sa_chunk: 1x chunk_size (input SA chunk)
+    // - d_psv_in: 1x chunk_size (input PSV chunk)
+    // - d_nsv_in: 1x chunk_size (input NSV chunk)
+    // - d_psv_out: 1x length (full output PSV, reused)
+    // - d_nsv_out: 1x length (full output NSV, reused)
+    // Total: (3 * chunk_size + 2 * length) * sizeof(SA_t)
+
+    size_t usable = free_mem * 0.9;  // Leave 15% safety margin
+    size_t output_size = 2 * length * sizeof(SA_t);  // d_psv_out + d_nsv_out
+
+    if (usable <= output_size) {
+        throw std::runtime_error(
+            "Insufficient GPU memory for streaming text-order conversion. "
+            "Free: " + std::to_string(free_mem / (1024.0 * 1024.0)) + " MB, "
+            "Required: " + std::to_string(output_size / (1024.0 * 1024.0)) + " MB"
+        );
+    }
+
+    size_t remaining = usable - output_size;
+    size_t chunk_size = remaining / (3 * sizeof(SA_t));
+    chunk_size = std::min(chunk_size, length);
+
+    // Align to warp size for efficiency
+    chunk_size = (chunk_size / 32) * 32;
+    if (chunk_size == 0) chunk_size = 32;
+
+    size_t num_chunks = (length + chunk_size - 1) / chunk_size;
+
+    std::cout << "\n=== GPU Streaming Text-Order Conversion ===" << std::endl;
+    std::cout << "  GPU Free Memory: " << free_mem / (1024.0 * 1024.0) << " MB" << std::endl;
+    std::cout << "  Output buffers (full): " << output_size / (1024.0 * 1024.0) << " MB" << std::endl;
+    std::cout << "  Chunk size: " << chunk_size << " elements ("
+              << (chunk_size * sizeof(SA_t)) / (1024.0 * 1024.0) << " MB)" << std::endl;
+    std::cout << "  Total chunks: " << num_chunks << std::endl;
+
+    // Allocate GPU buffers
+    SA_t *d_sa_chunk, *d_psv_in, *d_psv_out, *d_nsv_in, *d_nsv_out;
+    cudaMalloc(&d_sa_chunk, chunk_size * sizeof(SA_t));
+    cudaMalloc(&d_psv_in, chunk_size * sizeof(SA_t));
+    cudaMalloc(&d_psv_out, length * sizeof(SA_t));
+    cudaMalloc(&d_nsv_in, chunk_size * sizeof(SA_t));
+    cudaMalloc(&d_nsv_out, length * sizeof(SA_t));
+
+    // Initialize output buffers to MAX_VAL (shouldn't be needed, but for safety)
+    const SA_t MAX_VAL = get_max_value<SA_t>();
+    thrust::device_ptr<SA_t> psv_out_ptr = thrust::device_pointer_cast(d_psv_out);
+    thrust::device_ptr<SA_t> nsv_out_ptr = thrust::device_pointer_cast(d_nsv_out);
+    thrust::fill(psv_out_ptr, psv_out_ptr + length, MAX_VAL);
+    thrust::fill(nsv_out_ptr, nsv_out_ptr + length, MAX_VAL);
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    // ======== Phase A: Process PSV ========
+    profiler.start();
+    std::cout << "\nProcessing PSV:" << std::endl;
+    for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        size_t offset = chunk_idx * chunk_size;
+        size_t current_chunk = std::min(chunk_size, length - offset);
+
+        float progress = ((chunk_idx + 1) * 100.0f) / num_chunks;
+        std::cout << "\r  PSV conversion: " << std::fixed << std::setprecision(1)
+                  << progress << "% [" << (chunk_idx + 1) << "/" << num_chunks << "]" << std::flush;
+
+        // Upload SA chunk and PSV chunk
+        cudaMemcpyAsync(d_sa_chunk, sa_array + offset, current_chunk * sizeof(SA_t),
+                       cudaMemcpyHostToDevice, stream);
+        cudaMemcpyAsync(d_psv_in, psv + offset, current_chunk * sizeof(SA_t),
+                       cudaMemcpyHostToDevice, stream);
+
+        cudaStreamSynchronize(stream);
+
+        // Scatter: d_psv_out[d_sa_chunk[i]] = d_psv_in[i]
+        int blocks = (current_chunk + 255) / 256;
+        scatterKernel<<<blocks, 256, 0, stream>>>(
+            d_psv_in, d_sa_chunk, d_psv_out, current_chunk, offset
+        );
+    }
+    cudaStreamSynchronize(stream);
+    std::cout << std::endl;
+    profiler.stop("  PSV scatter (GPU)");
+
+    // Download PSV results
+    profiler.start();
+    cudaMemcpy(psv, d_psv_out, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+    profiler.stop("  PSV download");
+
+    // ======== Phase B: Process NSV (reuse same buffers) ========
+    profiler.start();
+    std::cout << "\nProcessing NSV:" << std::endl;
+    for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        size_t offset = chunk_idx * chunk_size;
+        size_t current_chunk = std::min(chunk_size, length - offset);
+
+        float progress = ((chunk_idx + 1) * 100.0f) / num_chunks;
+        std::cout << "\r  NSV conversion: " << std::fixed << std::setprecision(1)
+                  << progress << "% [" << (chunk_idx + 1) << "/" << num_chunks << "]" << std::flush;
+
+        // Upload SA chunk and NSV chunk
+        cudaMemcpyAsync(d_sa_chunk, sa_array + offset, current_chunk * sizeof(SA_t),
+                       cudaMemcpyHostToDevice, stream);
+        cudaMemcpyAsync(d_nsv_in, nsv + offset, current_chunk * sizeof(SA_t),
+                       cudaMemcpyHostToDevice, stream);
+
+        cudaStreamSynchronize(stream);
+
+        // Scatter: d_nsv_out[d_sa_chunk[i]] = d_nsv_in[i]
+        int blocks = (current_chunk + 255) / 256;
+        scatterKernel<<<blocks, 256, 0, stream>>>(
+            d_nsv_in, d_sa_chunk, d_nsv_out, current_chunk, offset
+        );
+    }
+    cudaStreamSynchronize(stream);
+    std::cout << std::endl;
+    profiler.stop("  NSV scatter (GPU)");
+
+    // Download NSV results
+    profiler.start();
+    cudaMemcpy(nsv, d_nsv_out, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+    profiler.stop("  NSV download");
+
+    // Cleanup
+    cudaStreamDestroy(stream);
+    cudaFree(d_sa_chunk);
+    cudaFree(d_psv_in);
+    cudaFree(d_psv_out);
+    cudaFree(d_nsv_in);
+    cudaFree(d_nsv_out);
+
+    profiler.stop("Total GPU streaming text-order conversion");
 }
 
 // Explicit template instantiations
@@ -1021,6 +1181,9 @@ template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::L
 template void PipelinePSVNSVProcessor::ComputeLZ77<uint32_t>(const uint8_t*, uint32_t*, uint32_t*, size_t, std::string);
 template void PipelinePSVNSVProcessor::ComputeLZ77<size_t>(const uint8_t*, size_t*, size_t*, size_t, std::string);
 
+template void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, size_t);
+template void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming<size_t>(const size_t*, size_t*, size_t*, size_t);
+
 // Explicit kernel instantiations
 template __global__ void processPSVTasksKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t*, const size_t, const size_t, const size_t);
 template __global__ void processPSVTasksKernel<size_t>(const size_t*, size_t*, const size_t*, const size_t, const size_t, const size_t);
@@ -1033,3 +1196,6 @@ template __global__ void computePSVNSVKernel<size_t>(const size_t*, size_t*, siz
 
 template __global__ void processPSVNSVBoundariesKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const uint32_t*, const size_t, const size_t);
 template __global__ void processPSVNSVBoundariesKernel<size_t>(const size_t*, size_t*, size_t*, const size_t*, const size_t, const size_t);
+
+template __global__ void scatterKernel<uint32_t>(const uint32_t*, const uint32_t*, uint32_t*, size_t, size_t);
+template __global__ void scatterKernel<size_t>(const size_t*, const size_t*, size_t*, size_t, size_t);
