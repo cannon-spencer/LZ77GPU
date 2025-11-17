@@ -12,11 +12,27 @@
 #include <stack>
 #include <unordered_set>
 #include <stdexcept>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 // Boundary search window size: 0 = unlimited, N = limit to N elements
 #ifndef BOUNDARY_SEARCH_WINDOW
 #define BOUNDARY_SEARCH_WINDOW 0
 #endif
+
+// Safety guard: upper bound on how many unresolved indices we keep during stream mode
+constexpr size_t UNFOUND_INDEX_THRESHOLD = 20ULL * 1000ULL * 1000ULL;  // 20 million
+
+inline size_t countTrailingZeros64(uint64_t value) {
+#if defined(_MSC_VER)
+    unsigned long index;
+    _BitScanForward64(&index, value);
+    return static_cast<size_t>(index);
+#else
+    return static_cast<size_t>(__builtin_ctzll(value));
+#endif
+}
 
 GPUProfiler::GPUProfiler() : start_event(nullptr), stop_event(nullptr) {
     cudaEventCreate(&start_event);
@@ -748,6 +764,11 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         // Metadata for unfound positions and block minimums
         std::vector<size_t> global_psv_unfound;
         std::vector<size_t> global_nsv_unfound;
+        size_t unfound_bitmap_words = (length + 63) / 64;
+        std::vector<uint64_t> psv_unfound_bitmap(unfound_bitmap_words, 0);
+        std::vector<uint64_t> nsv_unfound_bitmap(unfound_bitmap_words, 0);
+        size_t psv_unfound_count = 0;
+        size_t nsv_unfound_count = 0;
         const int block_size = DEFAULT_BLOCK_SIZE;
         size_t total_blocks = (length + block_size - 1) / block_size;
         size_t block_mins_size = total_blocks * sizeof(SA_t);
@@ -830,10 +851,28 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                 // After GPU boundary merge, these should only be inter-chunk boundaries
                 for (size_t i = offset; i < offset + current_chunk_size; ++i) {
                     if (is_invalid_value(psv_results[i])) {
-                        global_psv_unfound.push_back(i);
+                        size_t word = i >> 6;
+                        size_t bit = i & 63;
+                        psv_unfound_bitmap[word] |= (1ULL << bit);
+                        ++psv_unfound_count;
+                        if (psv_unfound_count > UNFOUND_INDEX_THRESHOLD) {
+                            throw std::runtime_error(
+                                "PSV unfound indices exceeded threshold ("
+                                + std::to_string(UNFOUND_INDEX_THRESHOLD)
+                                + ") during Phase 1. Reduce chunk size or adjust threshold.");
+                        }
                     }
                     if (is_invalid_value(nsv_results[i])) {
-                        global_nsv_unfound.push_back(i);
+                        size_t word = i >> 6;
+                        size_t bit = i & 63;
+                        nsv_unfound_bitmap[word] |= (1ULL << bit);
+                        ++nsv_unfound_count;
+                        if (nsv_unfound_count > UNFOUND_INDEX_THRESHOLD) {
+                            throw std::runtime_error(
+                                "NSV unfound indices exceeded threshold ("
+                                + std::to_string(UNFOUND_INDEX_THRESHOLD)
+                                + ") during Phase 1. Reduce chunk size or adjust threshold.");
+                        }
                     }
                 }
             }
@@ -846,6 +885,35 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         }
 
         profiler.stop("Phase 1: GPU Chunk Processing");
+
+        auto populate_unfound_indices = [&](const std::vector<uint64_t>& bitmap,
+                                            size_t count,
+                                            std::vector<size_t>& output) {
+            output.clear();
+            output.reserve(count);
+            for (size_t word_idx = 0; word_idx < bitmap.size(); ++word_idx) {
+                uint64_t word = bitmap[word_idx];
+                while (word) {
+                    size_t bit = countTrailingZeros64(word);
+                    size_t pos = word_idx * 64 + bit;
+                    if (pos < length) {
+                        output.push_back(pos);
+                    }
+                    word &= (word - 1);
+                }
+            }
+        };
+
+        if (psv_unfound_count > 0) {
+            populate_unfound_indices(psv_unfound_bitmap, psv_unfound_count, global_psv_unfound);
+        }
+        if (nsv_unfound_count > 0) {
+            populate_unfound_indices(nsv_unfound_bitmap, nsv_unfound_count, global_nsv_unfound);
+        }
+        psv_unfound_bitmap.clear();
+        psv_unfound_bitmap.shrink_to_fit();
+        nsv_unfound_bitmap.clear();
+        nsv_unfound_bitmap.shrink_to_fit();
 
         size_t free_after_phase1;
         cudaMemGetInfo(&free_after_phase1, &total_gpu);
