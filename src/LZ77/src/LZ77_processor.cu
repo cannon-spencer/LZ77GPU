@@ -68,60 +68,6 @@ float GPUProfiler::stop(const char* operation_name) {
 
 // Template kernel implementations
 template<typename SA_t>
-__global__ void processPSVTasksKernel(
-    const SA_t* __restrict__ sa_array,
-    SA_t* __restrict__ results,
-    const size_t* __restrict__ positions,
-    const size_t num_tasks,
-    const size_t start_pos,
-    const size_t end_pos
-) {
-    const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= num_tasks) return;
-
-    const size_t pos = positions[tid];
-    const SA_t current = sa_array[pos];
-    const SA_t MAX_VAL = get_max_value<SA_t>();
-
-    // PSV: search backwards from pos-1, bounded by [start_pos, end_pos)
-    size_t search_end = (pos > start_pos) ? pos : start_pos;
-    for (size_t j = search_end; j-- > start_pos;) {
-        if (sa_array[j] < current) {
-            results[tid] = sa_array[j];
-            return;
-        }
-    }
-    results[tid] = MAX_VAL;
-}
-
-template<typename SA_t>
-__global__ void processNSVTasksKernel(
-    const SA_t* __restrict__ sa_array,
-    SA_t* __restrict__ results,
-    const size_t* __restrict__ positions,
-    const size_t num_tasks,
-    const size_t start_pos,
-    const size_t end_pos
-) {
-    const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= num_tasks) return;
-
-    const size_t pos = positions[tid];
-    const SA_t current = sa_array[pos];
-    const SA_t MAX_VAL = get_max_value<SA_t>();
-
-    // NSV: search forwards from pos+1, bounded by [start_pos, end_pos)
-    size_t search_start = (pos + 1 > start_pos) ? (pos + 1) : start_pos;
-    for (size_t j = search_start; j < end_pos; ++j) {
-        if (sa_array[j] < current) {
-            results[tid] = sa_array[j];
-            return;
-        }
-    }
-    results[tid] = MAX_VAL;
-}
-
-template<typename SA_t>
 __global__ void computePSVNSVKernel(
     const SA_t* __restrict__ input,
     SA_t* __restrict__ psv_output,
@@ -259,19 +205,23 @@ __global__ void processPSVNSVBoundariesKernel(
     nsv_sa_order[gid] = nsv_val;
 }
 
+// Optimized dual scatter kernel - processes both PSV and NSV in a single pass
+// Reduces memory bandwidth by reading SA indices only once
 template<typename SA_t>
-__global__ void scatterKernel(
-    const SA_t* __restrict__ values,      // PSV/NSV values (SA-order)
+__global__ void dualScatterKernel(
+    const SA_t* __restrict__ psv_values,  // PSV values (SA-order)
+    const SA_t* __restrict__ nsv_values,  // NSV values (SA-order)
     const SA_t* __restrict__ indices,     // SA array chunk (text positions)
-    SA_t* __restrict__ output,            // Output array (text-order, full length)
-    size_t chunk_size,
-    size_t offset_base                    // Base offset for this chunk in SA
+    SA_t* __restrict__ psv_output,        // PSV output array (text-order)
+    SA_t* __restrict__ nsv_output,        // NSV output array (text-order)
+    size_t chunk_size
 ) {
     size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= chunk_size) return;
 
-    size_t text_pos = indices[tid];       // Text position from SA[offset_base + tid]
-    output[text_pos] = values[tid];       // Scatter to text position
+    size_t text_pos = indices[tid];       // Read SA index once
+    psv_output[text_pos] = psv_values[tid];
+    nsv_output[text_pos] = nsv_values[tid];
 }
 
 void PipelinePSVNSVProcessor::calculateAvailableMemory() {
@@ -354,162 +304,6 @@ void PipelinePSVNSVProcessor::ComputeLZ77(const uint8_t *data, SA_t *d_psv_text,
     }
 
     out_file.close();
-}
-
-template<typename SA_t>
-void PipelinePSVNSVProcessor::rearrangeTextOrder(const SA_t* sa_array,
-                       SA_t* psv,
-                       SA_t* nsv,
-                       const std::string& output_prefix,
-                       size_t length,
-                       const uint8_t* data) {
-
-    profiler.start();
-
-    // Allocate single temp buffer (1n) for scatter operations
-    size_t temp_size = length * sizeof(SA_t);
-    LOG_INFO("  Allocating temp buffer: {:.2f} MB", temp_size / (1024.0 * 1024.0));
-    std::vector<SA_t> temp_buffer(length);
-
-    // Scatter PSV: temp[sa[i]] = psv[i]
-    #pragma omp parallel for schedule(static)
-    for(size_t i = 0; i < length; i++) {
-        size_t text_pos = sa_array[i];
-        temp_buffer[text_pos] = psv[i];
-    }
-
-    // Copy back (sequential, cache-friendly)
-    std::memcpy(psv, temp_buffer.data(), temp_size);
-
-    // Scatter NSV: reuse temp_buffer
-    #pragma omp parallel for schedule(static)
-    for(size_t i = 0; i < length; i++) {
-        size_t text_pos = sa_array[i];
-        temp_buffer[text_pos] = nsv[i];
-    }
-
-    // Copy back
-    std::memcpy(nsv, temp_buffer.data(), temp_size);
-
-    profiler.stop("SA-order to Text-order conversion");
-
-    profiler.start();
-    std::string lz_output = output_prefix + "_lz77.bin";
-    ComputeLZ77(data, psv, nsv, length - 1, lz_output);
-    profiler.stop("LZ77 Processing");
-}
-
-template<typename SA_t>
-void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace(const SA_t* sa_array,
-                       SA_t* psv,
-                       SA_t* nsv,
-                       const std::string& output_prefix,
-                       size_t length,
-                       const uint8_t* data) {
-
-    // Memory-optimized version using fused cycle-following algorithm
-    // Peak memory: 3n×sizeof(SA_t) + n/8 (vs 4n×sizeof(SA_t) for temp buffer version)
-    //
-    // Key optimization: Process PSV and NSV simultaneously in a single pass
-    // - Both arrays share the same cycle structure (defined by SA)
-    // - Reduces memory accesses by ~33% compared to separate processing
-    // - Better cache locality by accessing PSV[i] and NSV[i] together
-
-    size_t bitvector_size = (length + 7) / 8;  // Round up to byte boundary
-    LOG_INFO("\n=== In-Place Text-Order Conversion (Memory-Optimized) ===");
-    LOG_INFO("  Method: Fused cycle-following (PSV+NSV)");
-    LOG_INFO("  Bitvector overhead: {:.2f} MB", bitvector_size / (1024.0 * 1024.0));
-    LOG_INFO("  Memory saved vs temp buffer: {:.2f} MB", (length * sizeof(SA_t)) / (1024.0 * 1024.0));
-
-    // Bitvector to track visited positions (n/8 bytes)
-    std::vector<bool> visited(length, false);
-
-    profiler.start();
-
-    // ======== Fused Rearrangement: Process PSV and NSV simultaneously ========
-    // Since PSV and NSV share the same permutation structure (defined by SA),
-    // we can follow each cycle once and update both arrays together.
-    // This reduces the number of passes over the data from 2 to 1.
-
-    for(size_t sa_pos = 0; sa_pos < length; sa_pos++) {
-        if (visited[sa_pos]) continue;  // Already processed in a previous cycle
-
-        // We want to perform: psv_text[sa[i]] = psv_sa[i]
-        // Start from SA position sa_pos, save its value
-        size_t current_sa = sa_pos;
-        SA_t temp_psv = psv[current_sa];
-        SA_t temp_nsv = nsv[current_sa];
-
-        // Follow the cycle: write psv_sa[current_sa] to position sa[current_sa]
-        size_t text_pos = sa_array[current_sa];
-        while(text_pos != sa_pos) {
-            visited[current_sa] = true;
-
-            // Write current values to text position, then read from text position for next iteration
-            SA_t next_psv = psv[text_pos];
-            SA_t next_nsv = nsv[text_pos];
-
-            psv[text_pos] = temp_psv;
-            nsv[text_pos] = temp_nsv;
-
-            // Move to next position in cycle
-            temp_psv = next_psv;
-            temp_nsv = next_nsv;
-            current_sa = text_pos;
-            text_pos = sa_array[current_sa];
-        }
-
-        // Close the cycle: write the saved values to the starting position
-        visited[current_sa] = true;
-        psv[text_pos] = temp_psv;
-        nsv[text_pos] = temp_nsv;
-    }
-
-    profiler.stop("Fused PSV+NSV in-place rearrangement");
-
-    // Note: ComputeLZ77 is NOT called here anymore
-    // Caller is responsible for calling ComputeLZ77 after releasing SA to reduce peak memory
-
-    /* ======== Alternative: Separate Processing (Kept for Reference) ========
-     * This version processes PSV and NSV in two separate passes.
-     * Pros: Easier to understand and debug
-     * Cons: ~33% more memory accesses, worse cache performance
-     *
-     * // Phase 1: Rearrange PSV
-     * for(size_t start = 0; start < length; start++) {
-     *     if (visited[start]) continue;
-     *     size_t current = start;
-     *     SA_t temp = psv[start];
-     *     size_t next = sa_array[current];
-     *     while(next != start) {
-     *         visited[current] = true;
-     *         psv[current] = psv[next];
-     *         current = next;
-     *         next = sa_array[current];
-     *     }
-     *     visited[current] = true;
-     *     psv[current] = temp;
-     * }
-     *
-     * // Reset visited
-     * std::fill(visited.begin(), visited.end(), false);
-     *
-     * // Phase 2: Rearrange NSV (same logic)
-     * for(size_t start = 0; start < length; start++) {
-     *     if (visited[start]) continue;
-     *     size_t current = start;
-     *     SA_t temp = nsv[start];
-     *     size_t next = sa_array[current];
-     *     while(next != start) {
-     *         visited[current] = true;
-     *         nsv[current] = nsv[next];
-     *         current = next;
-     *         next = sa_array[current];
-     *     }
-     *     visited[current] = true;
-     *     nsv[current] = temp;
-     * }
-     */
 }
 
 PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
@@ -1075,73 +869,42 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
-    // ======== Phase A: Process PSV ========
+    // ======== Optimized: Process PSV and NSV together ========
     profiler.start();
-    LOG_INFO("\nProcessing PSV:");
+    LOG_INFO("\nProcessing PSV+NSV (dual scatter):");
     for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
         size_t offset = chunk_idx * chunk_size;
         size_t current_chunk = std::min(chunk_size, length - offset);
 
         float progress = ((chunk_idx + 1) * 100.0f) / num_chunks;
-        fmt::print("\r  PSV conversion: {:.1f}% [{}/{}]", progress, chunk_idx + 1, num_chunks);
+        fmt::print("\r  Dual scatter: {:.1f}% [{}/{}]", progress, chunk_idx + 1, num_chunks);
         std::fflush(stdout);
 
-        // Upload SA chunk and PSV chunk
+        // Upload SA chunk, PSV chunk, and NSV chunk
         cudaMemcpyAsync(d_sa_chunk, sa_array + offset, current_chunk * sizeof(SA_t),
                        cudaMemcpyHostToDevice, stream);
         cudaMemcpyAsync(d_psv_in, psv + offset, current_chunk * sizeof(SA_t),
-                       cudaMemcpyHostToDevice, stream);
-
-        cudaStreamSynchronize(stream);
-
-        // Scatter: d_psv_out[d_sa_chunk[i]] = d_psv_in[i]
-        int blocks = (current_chunk + 255) / 256;
-        scatterKernel<<<blocks, 256, 0, stream>>>(
-            d_psv_in, d_sa_chunk, d_psv_out, current_chunk, offset
-        );
-    }
-    cudaStreamSynchronize(stream);
-    fmt::print("\n");
-    profiler.stop("  PSV scatter (GPU)");
-
-    // Download PSV results
-    profiler.start();
-    cudaMemcpy(psv, d_psv_out, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
-    profiler.stop("  PSV download");
-
-    // ======== Phase B: Process NSV (reuse same buffers) ========
-    profiler.start();
-    LOG_INFO("\nProcessing NSV:");
-    for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
-        size_t offset = chunk_idx * chunk_size;
-        size_t current_chunk = std::min(chunk_size, length - offset);
-
-        float progress = ((chunk_idx + 1) * 100.0f) / num_chunks;
-        fmt::print("\r  NSV conversion: {:.1f}% [{}/{}]", progress, chunk_idx + 1, num_chunks);
-        std::fflush(stdout);
-
-        // Upload SA chunk and NSV chunk
-        cudaMemcpyAsync(d_sa_chunk, sa_array + offset, current_chunk * sizeof(SA_t),
                        cudaMemcpyHostToDevice, stream);
         cudaMemcpyAsync(d_nsv_in, nsv + offset, current_chunk * sizeof(SA_t),
                        cudaMemcpyHostToDevice, stream);
 
         cudaStreamSynchronize(stream);
 
-        // Scatter: d_nsv_out[d_sa_chunk[i]] = d_nsv_in[i]
+        // Dual scatter: process both PSV and NSV in one kernel
         int blocks = (current_chunk + 255) / 256;
-        scatterKernel<<<blocks, 256, 0, stream>>>(
-            d_nsv_in, d_sa_chunk, d_nsv_out, current_chunk, offset
+        dualScatterKernel<<<blocks, 256, 0, stream>>>(
+            d_psv_in, d_nsv_in, d_sa_chunk, d_psv_out, d_nsv_out, current_chunk
         );
     }
     cudaStreamSynchronize(stream);
     fmt::print("\n");
-    profiler.stop("  NSV scatter (GPU)");
+    profiler.stop("  Dual scatter (GPU)");
 
-    // Download NSV results
+    // Download results
     profiler.start();
+    cudaMemcpy(psv, d_psv_out, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
     cudaMemcpy(nsv, d_nsv_out, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
-    profiler.stop("  NSV download");
+    profiler.stop("  PSV+NSV download");
 
     // Cleanup
     cudaStreamDestroy(stream);
@@ -1167,12 +930,6 @@ template void PipelinePSVNSVProcessor::resolveNSVWithPruning<size_t>(const size_
 template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(std::vector<uint32_t>&, const uint8_t*, size_t, const std::string&);
 template void PipelinePSVNSVProcessor::processWithStreams<size_t>(std::vector<size_t>&, const uint8_t*, size_t, const std::string&);
 
-template void PipelinePSVNSVProcessor::rearrangeTextOrder<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const std::string&, size_t, const uint8_t*);
-template void PipelinePSVNSVProcessor::rearrangeTextOrder<size_t>(const size_t*, size_t*, size_t*, const std::string&, size_t, const uint8_t*);
-
-template void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const std::string&, size_t, const uint8_t*);
-template void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace<size_t>(const size_t*, size_t*, size_t*, const std::string&, size_t, const uint8_t*);
-
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<uint32_t>(const uint8_t*, size_t, uint32_t, uint32_t, size_t);
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<size_t>(const uint8_t*, size_t, size_t, size_t, size_t);
 
@@ -1183,17 +940,11 @@ template void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming<uint32_t>(
 template void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming<size_t>(const size_t*, size_t*, size_t*, size_t);
 
 // Explicit kernel instantiations
-template __global__ void processPSVTasksKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t*, const size_t, const size_t, const size_t);
-template __global__ void processPSVTasksKernel<size_t>(const size_t*, size_t*, const size_t*, const size_t, const size_t, const size_t);
-
-template __global__ void processNSVTasksKernel<uint32_t>(const uint32_t*, uint32_t*, const size_t*, const size_t, const size_t, const size_t);
-template __global__ void processNSVTasksKernel<size_t>(const size_t*, size_t*, const size_t*, const size_t, const size_t, const size_t);
-
 template __global__ void computePSVNSVKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, uint32_t*, const size_t);
 template __global__ void computePSVNSVKernel<size_t>(const size_t*, size_t*, size_t*, size_t*, const size_t);
 
 template __global__ void processPSVNSVBoundariesKernel<uint32_t>(const uint32_t*, uint32_t*, uint32_t*, const uint32_t*, const size_t, const size_t);
 template __global__ void processPSVNSVBoundariesKernel<size_t>(const size_t*, size_t*, size_t*, const size_t*, const size_t, const size_t);
 
-template __global__ void scatterKernel<uint32_t>(const uint32_t*, const uint32_t*, uint32_t*, size_t, size_t);
-template __global__ void scatterKernel<size_t>(const size_t*, const size_t*, size_t*, size_t, size_t);
+template __global__ void dualScatterKernel<uint32_t>(const uint32_t*, const uint32_t*, const uint32_t*, uint32_t*, uint32_t*, size_t);
+template __global__ void dualScatterKernel<size_t>(const size_t*, const size_t*, const size_t*, size_t*, size_t*, size_t);

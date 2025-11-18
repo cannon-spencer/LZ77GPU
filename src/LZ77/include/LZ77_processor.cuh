@@ -30,39 +30,11 @@ constexpr bool is_invalid_value(SA_t value) {
 
 // CUDA kernels
 template<typename SA_t>
-__global__ void processPSVTasksKernel(
-    const SA_t* __restrict__ sa_array,
-    SA_t* __restrict__ results,
-    const size_t* __restrict__ positions,
-    const size_t num_tasks,
-    const size_t start_pos,
-    const size_t end_pos
-);
-
-template<typename SA_t>
-__global__ void processNSVTasksKernel(
-    const SA_t* __restrict__ sa_array,
-    SA_t* __restrict__ results,
-    const size_t* __restrict__ positions,
-    const size_t num_tasks,
-    const size_t start_pos,
-    const size_t end_pos
-);
-
-template<typename SA_t>
 __global__ void computePSVNSVKernel(
     const SA_t* __restrict__ input,
     SA_t* __restrict__ psv_output,
     SA_t* __restrict__ nsv_output,
     SA_t* __restrict__ block_min_output,
-    const size_t length
-);
-
-template<typename SA_t>
-__global__ void computePSVNSVKernelTextOrder(
-    const SA_t* __restrict__ input,
-    SA_t* __restrict__ psv_output,
-    SA_t* __restrict__ nsv_output,
     const size_t length
 );
 
@@ -77,12 +49,13 @@ __global__ void processPSVNSVBoundariesKernel(
 );
 
 template<typename SA_t>
-__global__ void scatterKernel(
-    const SA_t* __restrict__ values,
+__global__ void dualScatterKernel(
+    const SA_t* __restrict__ psv_values,
+    const SA_t* __restrict__ nsv_values,
     const SA_t* __restrict__ indices,
-    SA_t* __restrict__ output,
-    size_t chunk_size,
-    size_t offset_base
+    SA_t* __restrict__ psv_output,
+    SA_t* __restrict__ nsv_output,
+    size_t chunk_size
 );
 
 class GPUProfiler {
@@ -124,18 +97,6 @@ private:
     size_t available_memory;
 
     void calculateAvailableMemory();
-
-    template<typename SA_t>
-    void rearrangeTextOrder(const SA_t* sa_array, SA_t* psv, SA_t* nsv,
-                            const std::string& output_prefix, size_t length, const uint8_t* data);
-
-    // Memory-optimized in-place version using fused cycle-following algorithm
-    // Reduces peak memory from 4n×SA_t to 3n×SA_t+n/8 by avoiding temp buffer
-    // Processes PSV and NSV simultaneously in a single pass (33% fewer memory accesses)
-    // Trade-off: ~30-40% slower than temp buffer version due to random access pattern
-    template<typename SA_t>
-    void rearrangeTextOrderInPlace(const SA_t* sa_array, SA_t* psv, SA_t* nsv,
-                                    const std::string& output_prefix, size_t length, const uint8_t* data);
 
     template<typename SA_t>
     std::pair<std::pair<size_t, size_t>, size_t> LZFactor(const uint8_t *data, size_t i, SA_t psv, SA_t nsv, size_t n);
