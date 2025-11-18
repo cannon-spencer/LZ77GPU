@@ -1,6 +1,5 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
-#include <iostream>
 #include <vector>
 #include <algorithm>
 #include <omp.h>
@@ -12,6 +11,7 @@
 
 #include "prefix_doubling.cuh"
 #include "LZ77_processor.cuh"
+#include "logger.cuh"
 
 // libsais for fast SA construction
 #include <libsais.h>
@@ -126,23 +126,23 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
 
     size_t required_mem = calculateRequiredMemory(length, sizeof(SA_t));
 
-    std::cout << "\n=== Memory Check ===" << std::endl;
-    std::cout << "GPU Free Memory: " << free_mem / (1024*1024*1024.0) << " GB" << std::endl;
-    std::cout << "Required Memory: " << required_mem / (1024*1024*1024.0) << " GB" << std::endl;
+    LOG_INFO("\n=== Memory Check ===");
+    LOG_INFO("GPU Free Memory: {:.3f} GB", free_mem / (1024*1024*1024.0));
+    LOG_INFO("Required Memory: {:.3f} GB", required_mem / (1024*1024*1024.0));
 
     GPUProfiler profiler;
     PipelinePSVNSVProcessor processor;
 
     if (free_mem > required_mem) {
         // Path 1: Full GPU processing (zero-copy, fastest)
-        std::cout << "\n=== Path 1: Full GPU Mode ===" << std::endl;
-        std::cout << "Building SA on GPU..." << std::endl;
+        LOG_INFO("\n=== Path 1: Full GPU Mode ===");
+        LOG_INFO("Building SA on GPU...");
 
         profiler.start();
         SA_t* d_SA = build_SA_on_GPU<SA_t>(data);
         profiler.stop("GPU SA Construction");
 
-        std::cout << "SA construction completed, SA remains on GPU (zero-copy)" << std::endl;
+        LOG_INFO("SA construction completed, SA remains on GPU (zero-copy)");
 
         try {
             processor.template processFullGPUWithGPUSA<SA_t>(d_SA, data.data(), length, output_prefix);
@@ -154,24 +154,27 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
 
     } else {
         // Path 4: Stream processing (memory-limited)
-        std::cout << "\n=== Path 4: Stream Mode ===" << std::endl;
-        std::cout << "Building SA on CPU (SDSL)..." << std::endl;
+        LOG_INFO("\n=== Path 4: Stream Mode ===");
+        LOG_INFO("Building SA on CPU (SDSL)...");
 
         profiler.start();
         std::vector<SA_t> h_SA = build_SA_on_CPU<SA_t>(data);
         profiler.stop("CPU SA Construction");
 
-        std::cout << "SA construction completed on CPU" << std::endl;
+        LOG_INFO("SA construction completed on CPU");
 
         processor.template processWithStreams<SA_t>(h_SA, data.data(), length, output_prefix);
     }
 }
 
 int main(int argc, char **argv) {
+    // Initialize logger
+    lz77gpu::init_logger();
+
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <input_file> <output_prefix> [options]" << std::endl;
-        std::cerr << "Options:" << std::endl;
-        std::cerr << "  --force-size-t    Force size_t SA type (test 64-bit path)" << std::endl;
+        LOG_ERROR("Usage: {} <input_file> <output_prefix> [options]", argv[0]);
+        LOG_ERROR("Options:");
+        LOG_ERROR("  --force-size-t    Force size_t SA type (test 64-bit path)");
         return 1;
     }
 
@@ -186,7 +189,7 @@ int main(int argc, char **argv) {
         if (arg == "--force-size-t") {
             force_size_t = true;
         } else {
-            std::cerr << "Unknown option: " << arg << std::endl;
+            LOG_ERROR("Unknown option: {}", arg);
             return 1;
         }
     }
@@ -194,7 +197,7 @@ int main(int argc, char **argv) {
     std::ifstream file(input_file, std::ios::binary);
 
     if (!file) {
-        std::cerr << "Cannot open file: " << input_file << std::endl;
+        LOG_ERROR("Cannot open file: {}", input_file);
         return 1;
     }
 
@@ -203,47 +206,47 @@ int main(int argc, char **argv) {
     file.close();
 
     if (data.empty()) {
-        std::cerr << "File is empty or could not be read correctly." << std::endl;
+        LOG_ERROR("File is empty or could not be read correctly.");
         return 1;
     }
 
     // Add null terminator for suffix array construction
     data.push_back(0);
     size_t length = data.size();
-    
-    std::cout << "Input file size: " << length << " bytes" << std::endl;
+
+    LOG_INFO("Input file size: {} bytes", length);
 
     try {
         // Display GPU info
         size_t free_mem, total_mem;
         cudaMemGetInfo(&free_mem, &total_mem);
-        std::cout << "GPU: " << free_mem / (1024*1024*1024.0) << " GB free / "
-                  << total_mem / (1024*1024*1024.0) << " GB total" << std::endl;
+        LOG_INFO("GPU: {:.3f} GB free / {:.3f} GB total",
+                 free_mem / (1024*1024*1024.0), total_mem / (1024*1024*1024.0));
 
         if (force_size_t) {
-            std::cout << "SA Type: size_t (forced, 64-bit)" << std::endl;
+            LOG_INFO("SA Type: size_t (forced, 64-bit)");
         }
 
         // Choose SA type based on file size or forced option
         if (force_size_t || length > UINT32_MAX) {
             if (length <= UINT32_MAX) {
-                std::cout << "Note: File size fits in uint32_t but using size_t for testing" << std::endl;
+                LOG_INFO("Note: File size fits in uint32_t but using size_t for testing");
             } else {
-                std::cout << "File size requires size_t, using 64-bit processing" << std::endl;
+                LOG_INFO("File size requires size_t, using 64-bit processing");
             }
             processLZ77<size_t>(data, output_prefix);
         } else {
-            std::cout << "File size fits in uint32_t, using optimized 32-bit processing" << std::endl;
+            LOG_INFO("File size fits in uint32_t, using optimized 32-bit processing");
             processLZ77<uint32_t>(data, output_prefix);
         }
 
-        std::cout << "\nLZ77 compression completed successfully" << std::endl;
-        
+        LOG_INFO("\nLZ77 compression completed successfully");
+
     } catch (const std::exception& e) {
-        std::cerr << "Error occurred: " << e.what() << std::endl;
+        LOG_ERROR("Error occurred: {}", e.what());
         cudaError_t err = cudaGetLastError();
         if (err != cudaSuccess) {
-            std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+            LOG_ERROR("CUDA error: {}", cudaGetErrorString(err));
         }
         return 1;
     }

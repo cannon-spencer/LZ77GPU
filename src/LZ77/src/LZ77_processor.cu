@@ -1,7 +1,6 @@
 #include "LZ77_processor.cuh"
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
-#include <iostream>
 #include <vector>
 #include <algorithm>
 #include <omp.h>
@@ -12,6 +11,8 @@
 #include <stack>
 #include <unordered_set>
 #include <stdexcept>
+#include "logger.cuh"
+#include <spdlog/fmt/fmt.h>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -61,7 +62,7 @@ float GPUProfiler::stop(const char* operation_name) {
     cudaEventSynchronize(stop_event);
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start_event, stop_event);
-    std::cout << operation_name << " took " << milliseconds << " ms\n";
+    LOG_INFO("{} took {:.1f} ms", operation_name, milliseconds);
     return milliseconds;
 }
 
@@ -367,7 +368,7 @@ void PipelinePSVNSVProcessor::rearrangeTextOrder(const SA_t* sa_array,
 
     // Allocate single temp buffer (1n) for scatter operations
     size_t temp_size = length * sizeof(SA_t);
-    std::cout << "  Allocating temp buffer: " << temp_size / (1024.0 * 1024.0) << " MB" << std::endl;
+    LOG_INFO("  Allocating temp buffer: {:.2f} MB", temp_size / (1024.0 * 1024.0));
     std::vector<SA_t> temp_buffer(length);
 
     // Scatter PSV: temp[sa[i]] = psv[i]
@@ -415,10 +416,10 @@ void PipelinePSVNSVProcessor::rearrangeTextOrderInPlace(const SA_t* sa_array,
     // - Better cache locality by accessing PSV[i] and NSV[i] together
 
     size_t bitvector_size = (length + 7) / 8;  // Round up to byte boundary
-    std::cout << "\n=== In-Place Text-Order Conversion (Memory-Optimized) ===" << std::endl;
-    std::cout << "  Method: Fused cycle-following (PSV+NSV)" << std::endl;
-    std::cout << "  Bitvector overhead: " << bitvector_size / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "  Memory saved vs temp buffer: " << (length * sizeof(SA_t)) / (1024.0 * 1024.0) << " MB" << std::endl;
+    LOG_INFO("\n=== In-Place Text-Order Conversion (Memory-Optimized) ===");
+    LOG_INFO("  Method: Fused cycle-following (PSV+NSV)");
+    LOG_INFO("  Bitvector overhead: {:.2f} MB", bitvector_size / (1024.0 * 1024.0));
+    LOG_INFO("  Memory saved vs temp buffer: {:.2f} MB", (length * sizeof(SA_t)) / (1024.0 * 1024.0));
 
     // Bitvector to track visited positions (n/8 bytes)
     std::vector<bool> visited(length, false);
@@ -526,10 +527,10 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     // Memory profiling: Log initial state
     size_t free_mem_start, total_mem;
     cudaMemGetInfo(&free_mem_start, &total_mem);
-    std::cout << "\n=== Full GPU Memory Profile ===" << std::endl;
-    std::cout << "GPU Total Memory: " << total_mem / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "GPU Free Memory (start): " << free_mem_start / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "Input SA already on GPU: " << length * sizeof(SA_t) / (1024.0 * 1024.0) << " MB" << std::endl;
+    LOG_INFO("\n=== Full GPU Memory Profile ===");
+    LOG_INFO("GPU Total Memory: {:.2f} MB", total_mem / (1024.0 * 1024.0));
+    LOG_INFO("GPU Free Memory (start): {:.2f} MB", free_mem_start / (1024.0 * 1024.0));
+    LOG_INFO("Input SA already on GPU: {:.2f} MB", length * sizeof(SA_t) / (1024.0 * 1024.0));
 
     SA_t *d_psv_sa_order, *d_nsv_sa_order;
     SA_t *d_block_mins;
@@ -546,17 +547,17 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     d_temp = d_combined + 2 * length;
     d_block_mins = d_temp;  // Reuse first num_blocks elements of d_temp
 
-    std::cout << "Allocated combined buffer: " << total_size / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "  - d_psv_sa_order: " << length * sizeof(SA_t) / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "  - d_nsv_sa_order: " << length * sizeof(SA_t) / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "  - d_temp (shared with block_mins): " << length * sizeof(SA_t) / (1024.0 * 1024.0)
-              << " MB (first " << num_blocks << " blocks = " << num_blocks * sizeof(SA_t) / 1024.0 << " KB)" << std::endl;
+    LOG_INFO("Allocated combined buffer: {:.2f} MB", total_size / (1024.0 * 1024.0));
+    LOG_INFO("  - d_psv_sa_order: {:.2f} MB", length * sizeof(SA_t) / (1024.0 * 1024.0));
+    LOG_INFO("  - d_nsv_sa_order: {:.2f} MB", length * sizeof(SA_t) / (1024.0 * 1024.0));
+    LOG_INFO("  - d_temp (shared with block_mins): {:.2f} MB (first {} blocks = {:.2f} KB)",
+             length * sizeof(SA_t) / (1024.0 * 1024.0), num_blocks, num_blocks * sizeof(SA_t) / 1024.0);
 
     size_t free_mem_after_alloc;
     cudaMemGetInfo(&free_mem_after_alloc, &total_mem);
-    std::cout << "GPU Free Memory (after alloc): " << free_mem_after_alloc / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "Peak GPU Memory Used: " << (free_mem_start - free_mem_after_alloc) / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "================================\n" << std::endl;
+    LOG_INFO("GPU Free Memory (after alloc): {:.2f} MB", free_mem_after_alloc / (1024.0 * 1024.0));
+    LOG_INFO("Peak GPU Memory Used: {:.2f} MB", (free_mem_start - free_mem_after_alloc) / (1024.0 * 1024.0));
+    LOG_INFO("================================\n");
 
     std::vector<SA_t> h_psv_text_order(length);
     std::vector<SA_t> h_nsv_text_order(length);
@@ -603,13 +604,13 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
 
     size_t free_mem_end;
     cudaMemGetInfo(&free_mem_end, &total_mem);
-    std::cout << "\nGPU Free Memory (after cleanup): " << free_mem_end / (1024.0 * 1024.0) << " MB\n" << std::endl;
+    LOG_INFO("\nGPU Free Memory (after cleanup): {:.2f} MB\n", free_mem_end / (1024.0 * 1024.0));
 
     profiler.stop("Full GPU Processing (Single Work Array)");
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
-        std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+        LOG_ERROR("CUDA error: {}", cudaGetErrorString(err));
         throw std::runtime_error("CUDA error occurred during GPU processing");
     }
 
@@ -672,8 +673,8 @@ void PipelinePSVNSVProcessor::resolvePSVWithPruning(
         found_psv:;
     }
 
-    std::cout << "  PSV resolved " << unfound_indices.size() << " positions "
-              << "(searched: " << blocks_searched << " blocks, skipped: " << blocks_skipped << " blocks)" << std::endl;
+    LOG_INFO("  PSV resolved {} positions (searched: {} blocks, skipped: {} blocks)",
+             unfound_indices.size(), blocks_searched, blocks_skipped);
 }
 
 // Optimized NSV resolution using targeted search with block_min pruning
@@ -728,15 +729,15 @@ void PipelinePSVNSVProcessor::resolveNSVWithPruning(
         found_nsv:;
     }
 
-    std::cout << "  NSV resolved " << unfound_indices.size() << " positions "
-              << "(searched: " << blocks_searched << " blocks, skipped: " << blocks_skipped << " blocks)" << std::endl;
+    LOG_INFO("  NSV resolved {} positions (searched: {} blocks, skipped: {} blocks)",
+             unfound_indices.size(), blocks_searched, blocks_skipped);
 }
 
 template<typename SA_t>
 void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
     const SA_t* sa_ptr = sa_array.data();  // Cache pointer before potential reallocation
     try {
-        std::cout << "\n=== Starting Optimized Stream Processing ===" << std::endl;
+        LOG_INFO("\n=== Starting Optimized Stream Processing ===");
         profiler.start();
 
         // Calculate optimal chunk size based on available GPU memory
@@ -768,24 +769,23 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         }
         size_t num_chunks = (length + chunk_size - 1) / chunk_size;
 
-        std::cout << "\nConfiguration:" << std::endl;
-        std::cout << "  Total chunks: " << num_chunks << std::endl;
-        std::cout << "  Chunk size: " << chunk_size / (1024 * 1024) << " MB" << std::endl;
+        LOG_INFO("\nConfiguration:");
+        LOG_INFO("  Total chunks: {}", num_chunks);
+        LOG_INFO("  Chunk size: {} MB", chunk_size / (1024 * 1024));
 
         // Allocate result arrays
         size_t cpu_alloc_size = 2 * length * sizeof(SA_t);
-        std::cout << "\nCPU Memory Allocation:" << std::endl;
-        std::cout << "  PSV + NSV results: " << cpu_alloc_size / (1024.0 * 1024.0) << " MB" << std::endl;
+        LOG_INFO("\nCPU Memory Allocation:");
+        LOG_INFO("  PSV + NSV results: {:.2f} MB", cpu_alloc_size / (1024.0 * 1024.0));
         std::vector<SA_t> psv_results(length, get_max_value<SA_t>());
         std::vector<SA_t> nsv_results(length, get_max_value<SA_t>());
 
         size_t sa_memory = sa_array.size() * sizeof(SA_t);
         size_t input_memory = length * sizeof(uint8_t);
         double estimated_peak_mb = (cpu_alloc_size + sa_memory + input_memory) / (1024.0 * 1024.0);
-        std::cout << "  Input data (resident in main): " << input_memory / (1024.0 * 1024.0) << " MB" << std::endl;
-        std::cout << "  SA (CPU): " << sa_memory / (1024.0 * 1024.0) << " MB" << std::endl;
-        std::cout << "  Estimated CPU peak before metadata: " << estimated_peak_mb
-                  << " MB (data + SA + PSV + NSV)" << std::endl;
+        LOG_INFO("  Input data (resident in main): {:.2f} MB", input_memory / (1024.0 * 1024.0));
+        LOG_INFO("  SA (CPU): {:.2f} MB", sa_memory / (1024.0 * 1024.0));
+        LOG_INFO("  Estimated CPU peak before metadata: {:.2f} MB (data + SA + PSV + NSV)", estimated_peak_mb);
 
         // Metadata for unfound positions and block minimums
         std::vector<size_t> global_psv_unfound;
@@ -798,18 +798,17 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         const int block_size = DEFAULT_BLOCK_SIZE;
         size_t total_blocks = (length + block_size - 1) / block_size;
         size_t block_mins_size = total_blocks * sizeof(SA_t);
-        std::cout << "  Block mins metadata: " << block_mins_size / (1024.0 * 1024.0) << " MB" << std::endl;
+        LOG_INFO("  Block mins metadata: {:.4f} MB", block_mins_size / (1024.0 * 1024.0));
         std::vector<SA_t> global_block_mins(total_blocks);
-        std::cout << "  Estimated CPU peak with metadata: "
-                  << (estimated_peak_mb + block_mins_size / (1024.0 * 1024.0))
-                  << " MB (actual peak may vary with unfound indices)" << std::endl;
+        LOG_INFO("  Estimated CPU peak with metadata: {:.2f} MB (actual peak may vary with unfound indices)",
+                 estimated_peak_mb + block_mins_size / (1024.0 * 1024.0));
 
         // ======== PHASE 1: GPU Chunk Processing + Metadata Collection ========
-        std::cout << "\n=== Phase 1: GPU Chunk Processing ===" << std::endl;
+        LOG_INFO("\n=== Phase 1: GPU Chunk Processing ===");
         size_t free_before, total_gpu;
         cudaMemGetInfo(&free_before, &total_gpu);
-        std::cout << "GPU Memory before Phase 1: " << free_before / (1024.0 * 1024.0) << " MB free / "
-                  << total_gpu / (1024.0 * 1024.0) << " MB total" << std::endl;
+        LOG_INFO("GPU Memory before Phase 1: {:.2f} MB free / {:.2f} MB total",
+                 free_before / (1024.0 * 1024.0), total_gpu / (1024.0 * 1024.0));
 
         profiler.start();
         {
@@ -820,8 +819,7 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
 
             // Allocate GPU buffers for one chunk
             size_t gpu_chunk_alloc = 3 * chunk_size * sizeof(SA_t);
-            std::cout << "GPU per-chunk allocation: " << gpu_chunk_alloc / (1024.0 * 1024.0) << " MB "
-                      << "(input + psv + nsv)" << std::endl;
+            LOG_INFO("GPU per-chunk allocation: {:.2f} MB (input + psv + nsv)", gpu_chunk_alloc / (1024.0 * 1024.0));
 
             SA_t *d_input, *d_psv_output, *d_nsv_output, *d_block_mins;
             cudaMalloc(&d_input, chunk_size * sizeof(SA_t));
@@ -834,8 +832,8 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                 const int num_blocks = (current_chunk_size + block_size - 1) / block_size;
 
                 float progress = ((chunk_idx + 1) * 100.0f) / num_chunks;
-                std::cout << "\rPhase 1 - GPU Processing: " << std::fixed << std::setprecision(1)
-                         << progress << "% [" << (chunk_idx + 1) << "/" << num_chunks << "]" << std::flush;
+                fmt::print("\rPhase 1 - GPU Processing: {:.1f}% [{}/{}]", progress, chunk_idx + 1, num_chunks);
+                std::fflush(stdout);
 
                 cudaMalloc(&d_block_mins, num_blocks * sizeof(SA_t));
 
@@ -903,7 +901,7 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                 }
             }
 
-            std::cout << std::endl;
+            fmt::print("\n");
             cudaStreamDestroy(compute_stream);
             cudaFree(d_input);
             cudaFree(d_psv_output);
@@ -943,21 +941,21 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
 
         size_t free_after_phase1;
         cudaMemGetInfo(&free_after_phase1, &total_gpu);
-        std::cout << "GPU Memory after Phase 1: " << free_after_phase1 / (1024.0 * 1024.0) << " MB free" << std::endl;
+        LOG_INFO("GPU Memory after Phase 1: {:.1f} MB free", free_after_phase1 / (1024.0 * 1024.0));
 
-        std::cout << "\nMetadata collected (after GPU intra-chunk merge):" << std::endl;
-        std::cout << "  PSV unfound (inter-chunk boundaries): " << global_psv_unfound.size() << " positions ("
-                  << (global_psv_unfound.size() * 100.0 / length) << "%)" << std::endl;
-        std::cout << "  NSV unfound (inter-chunk boundaries): " << global_nsv_unfound.size() << " positions ("
-                  << (global_nsv_unfound.size() * 100.0 / length) << "%)" << std::endl;
+        LOG_INFO("\nMetadata collected (after GPU intra-chunk merge):");
+        LOG_INFO("  PSV unfound (inter-chunk boundaries): {} positions ({:.1f}%)",
+                 global_psv_unfound.size(), global_psv_unfound.size() * 100.0 / length);
+        LOG_INFO("  NSV unfound (inter-chunk boundaries): {} positions ({:.1f}%)",
+                 global_nsv_unfound.size(), global_nsv_unfound.size() * 100.0 / length);
 
         if (num_chunks > 1) {
-            std::cout << "  Note: GPU handled intra-chunk boundaries, CPU will handle "
-                      << num_chunks - 1 << " inter-chunk boundaries" << std::endl;
+            LOG_INFO("  Note: GPU handled intra-chunk boundaries, CPU will handle {} inter-chunk boundaries",
+                     num_chunks - 1);
         }
 
         // ======== PHASE 2: CPU Targeted Search with Block Min Pruning ========
-        std::cout << "\n=== Phase 2: CPU Targeted Search ===" << std::endl;
+        LOG_INFO("\n=== Phase 2: CPU Targeted Search ===");
         profiler.start();
 
         // Resolve PSV using targeted search with block_min pruning
@@ -981,7 +979,7 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         profiler.stop("Phase 2: CPU Targeted Search");
 
         // ======== PHASE 3: Text Order Conversion ========
-        std::cout << "\n=== Phase 3: SA-order to Text-order Conversion ===" << std::endl;
+        LOG_INFO("\n=== Phase 3: SA-order to Text-order Conversion ===");
 
         // Convert to text order using GPU streaming (memory-efficient)
         convertToTextOrderGPUStreaming(sa_ptr, psv_results.data(), nsv_results.data(), length);
@@ -991,21 +989,21 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         // Peak memory before: SA + PSV + NSV + data + metadata
         // Peak memory after: PSV + NSV + data + metadata (saves ~57.6 GB for 7.2GB input)
         size_t sa_memory_mb = (sa_array.size() * sizeof(SA_t)) / (1024.0 * 1024.0);
-        std::cout << "\nReleasing SA (freeing " << sa_memory_mb << " MB)" << std::endl;
+        LOG_INFO("\nReleasing SA (freeing {} MB)", sa_memory_mb);
         sa_array.clear();
         sa_array.shrink_to_fit();
 
         // ======== PHASE 4: LZ77 Factorization ========
-        std::cout << "\n=== Phase 4: LZ77 Factorization (SA already freed) ===" << std::endl;
+        LOG_INFO("\n=== Phase 4: LZ77 Factorization (SA already freed) ===");
         profiler.start();
         std::string lz_output = output_prefix + "_lz77.bin";
         ComputeLZ77(data, psv_results.data(), nsv_results.data(), length - 1, lz_output);
         profiler.stop("LZ77 Processing");
 
-        std::cout << "\n=== Stream Processing Complete ===" << std::endl;
+        LOG_INFO("\n=== Stream Processing Complete ===");
 
     } catch (const std::exception& e) {
-        std::cerr << "Error in stream processing: " << e.what() << std::endl;
+        LOG_ERROR("Error in stream processing: {}", e.what());
         throw;
     }
 }
@@ -1052,12 +1050,12 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
 
     size_t num_chunks = (length + chunk_size - 1) / chunk_size;
 
-    std::cout << "\n=== GPU Streaming Text-Order Conversion ===" << std::endl;
-    std::cout << "  GPU Free Memory: " << free_mem / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "  Output buffers (full): " << output_size / (1024.0 * 1024.0) << " MB" << std::endl;
-    std::cout << "  Chunk size: " << chunk_size << " elements ("
-              << (chunk_size * sizeof(SA_t)) / (1024.0 * 1024.0) << " MB)" << std::endl;
-    std::cout << "  Total chunks: " << num_chunks << std::endl;
+    LOG_INFO("\n=== GPU Streaming Text-Order Conversion ===");
+    LOG_INFO("  GPU Free Memory: {:.1f} MB", free_mem / (1024.0 * 1024.0));
+    LOG_INFO("  Output buffers (full): {:.1f} MB", output_size / (1024.0 * 1024.0));
+    LOG_INFO("  Chunk size: {} elements ({:.1f} MB)",
+             chunk_size, (chunk_size * sizeof(SA_t)) / (1024.0 * 1024.0));
+    LOG_INFO("  Total chunks: {}", num_chunks);
 
     // Allocate GPU buffers
     SA_t *d_sa_chunk, *d_psv_in, *d_psv_out, *d_nsv_in, *d_nsv_out;
@@ -1079,14 +1077,14 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
 
     // ======== Phase A: Process PSV ========
     profiler.start();
-    std::cout << "\nProcessing PSV:" << std::endl;
+    LOG_INFO("\nProcessing PSV:");
     for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
         size_t offset = chunk_idx * chunk_size;
         size_t current_chunk = std::min(chunk_size, length - offset);
 
         float progress = ((chunk_idx + 1) * 100.0f) / num_chunks;
-        std::cout << "\r  PSV conversion: " << std::fixed << std::setprecision(1)
-                  << progress << "% [" << (chunk_idx + 1) << "/" << num_chunks << "]" << std::flush;
+        fmt::print("\r  PSV conversion: {:.1f}% [{}/{}]", progress, chunk_idx + 1, num_chunks);
+        std::fflush(stdout);
 
         // Upload SA chunk and PSV chunk
         cudaMemcpyAsync(d_sa_chunk, sa_array + offset, current_chunk * sizeof(SA_t),
@@ -1103,7 +1101,7 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
         );
     }
     cudaStreamSynchronize(stream);
-    std::cout << std::endl;
+    fmt::print("\n");
     profiler.stop("  PSV scatter (GPU)");
 
     // Download PSV results
@@ -1113,14 +1111,14 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
 
     // ======== Phase B: Process NSV (reuse same buffers) ========
     profiler.start();
-    std::cout << "\nProcessing NSV:" << std::endl;
+    LOG_INFO("\nProcessing NSV:");
     for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
         size_t offset = chunk_idx * chunk_size;
         size_t current_chunk = std::min(chunk_size, length - offset);
 
         float progress = ((chunk_idx + 1) * 100.0f) / num_chunks;
-        std::cout << "\r  NSV conversion: " << std::fixed << std::setprecision(1)
-                  << progress << "% [" << (chunk_idx + 1) << "/" << num_chunks << "]" << std::flush;
+        fmt::print("\r  NSV conversion: {:.1f}% [{}/{}]", progress, chunk_idx + 1, num_chunks);
+        std::fflush(stdout);
 
         // Upload SA chunk and NSV chunk
         cudaMemcpyAsync(d_sa_chunk, sa_array + offset, current_chunk * sizeof(SA_t),
@@ -1137,7 +1135,7 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
         );
     }
     cudaStreamSynchronize(stream);
-    std::cout << std::endl;
+    fmt::print("\n");
     profiler.stop("  NSV scatter (GPU)");
 
     // Download NSV results

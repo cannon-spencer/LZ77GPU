@@ -1,4 +1,3 @@
-#include <iostream>
 #include <fstream>
 #include <vector>
 #include <cstdint>
@@ -12,17 +11,18 @@
 #include "profiler.cuh"
 #include "libcubwt.cuh"
 #include "prefix_doubling.cuh"
+#include "logger.cuh"
 
 void print_profiling_summary() {
-    std::cout << "==== Profiling Summary ====\n";
-    std::cout << "Initialization time:      " << g_alloc_time_ns / 1e6 << " ms\n";
-    std::cout << "Total Sort time:          " << g_sort_time_ns / 1e6 << " ms\n";
-    std::cout << "Compute Diff Kernel time: " << g_kernel_diff_time_ns / 1e6 << " ms\n";
-    std::cout << "Inclusive Scan time:      " << g_scan_time_ns / 1e6 << " ms\n";
-    std::cout << "Assign Ranks Kernel time: " << g_kernel_assign_time_ns / 1e6 << " ms\n";
-    std::cout << "Max Rank Host Copy time:  " << g_copy_time_ns / 1e6 << " ms\n";
-    std::cout << "Deallocation time:        " << g_cleanup_time_ns / 1e6 << " ms\n";
-    std::cout << "===========================\n";
+    LOG_INFO("==== Profiling Summary ====");
+    LOG_INFO("Initialization time:      {:.2f} ms", g_alloc_time_ns / 1e6);
+    LOG_INFO("Total Sort time:          {:.2f} ms", g_sort_time_ns / 1e6);
+    LOG_INFO("Compute Diff Kernel time: {:.2f} ms", g_kernel_diff_time_ns / 1e6);
+    LOG_INFO("Inclusive Scan time:      {:.2f} ms", g_scan_time_ns / 1e6);
+    LOG_INFO("Assign Ranks Kernel time: {:.2f} ms", g_kernel_assign_time_ns / 1e6);
+    LOG_INFO("Max Rank Host Copy time:  {:.2f} ms", g_copy_time_ns / 1e6);
+    LOG_INFO("Deallocation time:        {:.2f} ms", g_cleanup_time_ns / 1e6);
+    LOG_INFO("===========================");
 }
 
 
@@ -32,16 +32,15 @@ void dump_sa(const std::vector<SA_t>& sa,
              const char* tag,
              size_t max_lines = SIZE_MAX)    // PASS n to print all
 {
-    std::cout << "\n--- " << tag << " (size=" << sa.size() << ") ---\n";
+    LOG_INFO("\n--- {} (size={}) ---", tag, sa.size());
     size_t shown = 0;
     for (size_t i = 0; i < sa.size(); ++i) {
         if (shown++ == max_lines) {          // stop after max_lines
-            std::cout << "  ... (truncated)\n";
+            LOG_INFO("  ... (truncated)");
             break;
         }
-        std::cout << std::setw(6) << i << ": " << sa[i] << '\n';
+        LOG_INFO("{:6}: {}", i, sa[i]);
     }
-    std::cout.flush();
 }
 
 
@@ -60,30 +59,33 @@ bool compare_SA(const std::vector<T>& sa1, const std::vector<U>& sa2) {
 }
 
 int main(int argc, char** argv){
+    // Initialize logger
+    lz77gpu::init_logger();
+
     /**
      *  READ THE INPUT FILE
      * */
 
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <input_file>\n";
+        LOG_ERROR("Usage: {} <input_file>", argv[0]);
         return 1;
     }
 
     std::ifstream fin(argv[1], std::ios::binary);
     if (!fin.is_open()) {
-        std::cerr << "Cannot open file: " << argv[1] << "\n";
+        LOG_ERROR("Cannot open file: {}", argv[1]);
         return 1;
     }
     std::vector<uint8_t> s((std::istreambuf_iterator<char>(fin)), {});
     fin.close();
 
     if (s.empty()) {
-        std::cerr << "File is empty.\n";
+        LOG_ERROR("File is empty.");
         return 1;
     }
 
     size_t n = s.size();
-    std::cout << "Loaded file: " << argv[1] << " (length = " << n / (1024 * 1024) << " MB)\n\n";
+    LOG_INFO("Loaded file: {} (length = {} MB)\n", argv[1], n / (1024 * 1024));
 
     /**
     * LIBCUBWT TESTING
@@ -102,7 +104,7 @@ int main(int argc, char** argv){
     void* device_storage = nullptr;
     int64_t err = libcubwt_allocate_device_storage(&device_storage, n);
     if (err != LIBCUBWT_NO_ERROR) {
-        std::cerr << "libcubwt_allocate_device_storage error\n";
+        LOG_ERROR("libcubwt_allocate_device_storage error");
         return 1;
     }
 
@@ -113,7 +115,7 @@ int main(int argc, char** argv){
     cubwt_monitor.stop();
 
     if (err != LIBCUBWT_NO_ERROR) {
-        std::cerr << "libcubwt_sa error\n";
+        LOG_ERROR("libcubwt_sa error");
         return 1;
     }
 
@@ -121,10 +123,10 @@ int main(int argc, char** argv){
     libcubwt_free_device_storage(device_storage);
 
     auto cubwt_duration = std::chrono::duration_cast<std::chrono::milliseconds>(cubwt_stop - cubwt_start).count();
-    std::cout << "libcubwt SA computation time: " << cubwt_duration << " ms\n";
+    LOG_INFO("libcubwt SA computation time: {} ms", cubwt_duration);
 
     // final peak usage for libcubwt
-    std::cout << "Peak GPU memory (libcubwt): " << cubwt_monitor.get_peak_usage_mb() << " MB\n\n";
+    LOG_INFO("Peak GPU memory (libcubwt): {:.2f} MB\n", cubwt_monitor.get_peak_usage_mb());
 
     /**
      * PREFIX DOUBLING
@@ -141,10 +143,10 @@ int main(int argc, char** argv){
     prefix_monitor.stop();
 
     auto pd_duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
-    std::cout << "Prefix Doubling computation time: " << pd_duration << " ms\n";
+    LOG_INFO("Prefix Doubling computation time: {} ms", pd_duration);
 
     // show peak usage in MB for prefix doubling
-    std::cout << "Peak GPU memory (prefix doubling): " << prefix_monitor.get_peak_usage_mb() << " MB\n\n";
+    LOG_INFO("Peak GPU memory (prefix doubling): {:.2f} MB\n", prefix_monitor.get_peak_usage_mb());
 
     // output the profiler for sections of the prefix doubling
     print_profiling_summary();
@@ -184,21 +186,21 @@ int main(int argc, char** argv){
     std::vector<uint32_t> SA_pd(n);
     cudaError_t cuda_err = cudaMemcpy(SA_pd.data(), d_SA_pd, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
     if (cuda_err != cudaSuccess) {
-        std::cerr << "Failed to copy SA from GPU to host: " << cudaGetErrorString(cuda_err) << std::endl;
+        LOG_ERROR("Failed to copy SA from GPU to host: {}", cudaGetErrorString(cuda_err));
         cudaFree(d_SA_pd);
         return 1;
     }
 
     // Clean up GPU memory after copying to host
     cudaFree(d_SA_pd);
-    
+
     bool match = compare_SA(SA_pd, SA_cubwt);
     //match = match && compare_SA(SA_cubwt, SA_sdsl);
-    std::cout << "Checking if both methods produce the same SA...\n";
+    LOG_INFO("Checking if both methods produce the same SA...");
     if (match) {
-        std::cout << "SUCCESS: Both suffix arrays match!\n";
+        LOG_INFO("SUCCESS: Both suffix arrays match!");
     } else {
-        std::cout << "ERROR: The suffix arrays do NOT match.\n";
+        LOG_ERROR("ERROR: The suffix arrays do NOT match.");
 
         // debug print the arrays
         dump_sa(SA_pd,    "Prefix-doubling SA", SA_pd.size());

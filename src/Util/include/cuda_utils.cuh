@@ -1,13 +1,12 @@
 #pragma once
 
-#include <iostream>
 #include <cuda_runtime.h>
+#include <spdlog/spdlog.h>
 
 #define CHECK_CUDA_ERROR(call) { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
-        std::cerr << "CUDA error in " << __FILE__ << " at line " << __LINE__ << ": " \
-                  << cudaGetErrorString(err) << std::endl; \
+        spdlog::error("CUDA error in {} at line {}: {}", __FILE__, __LINE__, cudaGetErrorString(err)); \
         exit(EXIT_FAILURE); \
     } \
 }
@@ -20,8 +19,7 @@ cudaError_t myCudaMalloc(T** ptr, size_t size, const char* varName) {
     if (err == cudaSuccess) {
         g_allocated += size;
     } else {
-        std::cerr << "cudaMalloc failed for [" << varName << "]: "
-                  << cudaGetErrorString(err) << std::endl;
+        spdlog::error("cudaMalloc failed for [{}]: {}", varName, cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
     return err;

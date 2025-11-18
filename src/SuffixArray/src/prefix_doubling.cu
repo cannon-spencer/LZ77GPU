@@ -1,8 +1,8 @@
 #include <vector>
 #include <cstdint>
-#include <iostream>
 #include <chrono>
 #include <cuda_runtime.h>
+#include "logger.cuh"
 
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
@@ -136,8 +136,7 @@ T* build_suffix_array_prefix_doubling_template(const std::vector<uint8_t>& s, si
     myCudaMalloc(&d_diff, n * sizeof(T), "d_diff");
     thrust::device_vector<T> d_key_lo(n);
 
-    std::cout << "Total GPU Memory Allocated for " << typeid(T).name() << ": " 
-              << g_allocated / (1024.0 * 1024.0) << " MB\n";
+    LOG_INFO("Total GPU Memory Allocated for {}: {:.2f} MB", typeid(T).name(), g_allocated / (1024.0 * 1024.0));
     record_time(g_alloc_time_ns, t0);
 
     // Prefix doubling

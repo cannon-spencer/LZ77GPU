@@ -112,6 +112,12 @@ FetchContent_MakeAvailable(malloc_count)
 add_library(malloc_count STATIC ${malloc_count_SOURCE_DIR}/malloc_count.c)
 target_include_directories(malloc_count PUBLIC ${malloc_count_SOURCE_DIR})
 
+# ── spdlog (async logging) ───────────────────────────────────────────────────
+FetchContent_Declare(spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG        v1.15.0)
+FetchContent_MakeAvailable(spdlog)
+
 # --- Catch2 (unit-test framework) -------------------------------------------
 FetchContent_Declare(Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
@@ -141,7 +147,7 @@ add_library(util STATIC ${UTIL_SOURCES} ${UTIL_HEADERS})
 target_include_directories(util PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Util/include
         ${DIVSUFSORT_INCLUDE_DIR})
-target_link_libraries(util PUBLIC CUDA::cudart)
+target_link_libraries(util PUBLIC CUDA::cudart spdlog::spdlog)
 
 
 ###############################################################################
@@ -154,6 +160,8 @@ target_include_directories(suffix_array PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SuffixArray/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SuffixArray/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Util/include)
+
+target_link_libraries(suffix_array PUBLIC spdlog::spdlog)
 
 set_target_properties(suffix_array PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON)
@@ -185,6 +193,7 @@ foreach(tgt IN ITEMS sa_profiler lz77)
             CLI11::CLI11
             sdsl divsufsort divsufsort64
             libsais
+            spdlog::spdlog
             $<$<BOOL:${OpenMP_FOUND}>:OpenMP::OpenMP_CXX>)
     target_compile_options(${tgt} PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>: -use_fast_math --extended-lambda --expt-relaxed-constexpr>)
