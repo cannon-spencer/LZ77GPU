@@ -80,6 +80,13 @@ set(LIBDIVSUFSORT_FOUND TRUE CACHE BOOL "" FORCE)
 set(LIBDIVSUFSORT_INCLUDE_DIR "${DIVSUFSORT_INCLUDE_DIR}" CACHE PATH "" FORCE)
 set(LIBDIVSUFSORT_LIBRARY "divsufsort" CACHE STRING "" FORCE)
 
+# ── libsais (fast SA construction) ───────────────────────────────────────────
+FetchContent_Declare(libsais
+        GIT_REPOSITORY https://github.com/IlyaGrebnov/libsais.git
+        GIT_TAG        v2.8.6)
+FetchContent_MakeAvailable(libsais)
+set(LIBSAIS_INCLUDE_DIR ${libsais_SOURCE_DIR}/include)
+
 
 # ── SDSL ─────────────────────────────────────────────────────────────────────
 FetchContent_Declare(sdsl
@@ -168,6 +175,7 @@ set(ALL_INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SuffixArray/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src/LZ77/include
         ${DIVSUFSORT_INCLUDE_DIR}
+        ${LIBSAIS_INCLUDE_DIR}
         ${sdsl_SOURCE_DIR}/include)
 
 foreach(tgt IN ITEMS sa_profiler lz77)
@@ -176,6 +184,7 @@ foreach(tgt IN ITEMS sa_profiler lz77)
             cubwt util malloc_count
             CLI11::CLI11
             sdsl divsufsort divsufsort64
+            libsais
             $<$<BOOL:${OpenMP_FOUND}>:OpenMP::OpenMP_CXX>)
     target_compile_options(${tgt} PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>: -use_fast_math --extended-lambda --expt-relaxed-constexpr>)

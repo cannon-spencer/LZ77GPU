@@ -13,6 +13,10 @@
 #include "prefix_doubling.cuh"
 #include "LZ77_processor.cuh"
 
+// libsais for fast SA construction
+#include <libsais.h>
+#include <libsais64.h>
+
 
 
 /**
@@ -57,7 +61,7 @@ SA_t* build_SA_on_GPU(const std::vector<uint8_t>& data) {
 }
 
 /**
- * Build suffix array on CPU using SDSL
+ * Build suffix array on CPU using libsais (fastest CPU SA construction)
  * @param data Input data
  * @return Host vector containing SA
  */
@@ -67,20 +71,39 @@ std::vector<SA_t> build_SA_on_CPU(const std::vector<uint8_t>& data) {
     std::vector<SA_t> SA(length);
 
     if constexpr (std::is_same_v<SA_t, uint32_t>) {
-        sdsl::int_vector<32> sdsl_sa(length);
-        sdsl::algorithm::calculate_sa(static_cast<const unsigned char*>(data.data()), length, sdsl_sa);
+        // Use libsais for 32-bit (files <= 2GB)
+        std::vector<int32_t> sa_tmp(length);
 
+        // Use OpenMP version if available for parallel construction
+        #if defined(_OPENMP)
+        int threads = omp_get_max_threads();
+        libsais_omp(data.data(), sa_tmp.data(), static_cast<int32_t>(length), 0, nullptr, threads);
+        #else
+        libsais(data.data(), sa_tmp.data(), static_cast<int32_t>(length), 0, nullptr);
+        #endif
+
+        // Parallel copy int32_t -> uint32_t
+        #pragma omp parallel for
         for (size_t i = 0; i < length; ++i) {
-            SA[i] = static_cast<uint32_t>(sdsl_sa[i]);
+            SA[i] = static_cast<uint32_t>(sa_tmp[i]);
         }
 
     } else if constexpr (std::is_same_v<SA_t, size_t>) {
-        sdsl::int_vector<sizeof(size_t) * 8> sdsl_sa(length);
-        sdsl::algorithm::calculate_sa(static_cast<const unsigned char*>(data.data()), length, sdsl_sa);
+        // Use libsais64 for 64-bit (files > 2GB)
+        std::vector<int64_t> sa_tmp(length);
 
-        // Copy element-by-element (sdsl::int_vector is bit-packed, can't use memcpy)
+        // Use OpenMP version if available for parallel construction
+        #if defined(_OPENMP)
+        int threads = omp_get_max_threads();
+        libsais64_omp(data.data(), sa_tmp.data(), static_cast<int64_t>(length), 0, nullptr, threads);
+        #else
+        libsais64(data.data(), sa_tmp.data(), static_cast<int64_t>(length), 0, nullptr);
+        #endif
+
+        // Parallel copy int64_t -> size_t
+        #pragma omp parallel for
         for (size_t i = 0; i < length; ++i) {
-            SA[i] = static_cast<size_t>(sdsl_sa[i]);
+            SA[i] = static_cast<size_t>(sa_tmp[i]);
         }
     }
 
