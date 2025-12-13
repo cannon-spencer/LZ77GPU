@@ -528,8 +528,37 @@ void PipelinePSVNSVProcessor::resolveNSVWithPruning(
 }
 
 template<typename SA_t>
-void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
-    const SA_t* sa_ptr = sa_array.data();  // Cache pointer before potential reallocation
+void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length,
+                                                  const std::string& output_prefix, bool use_uint40) {
+    // uint40 optimization: only applies to size_t mode
+    const bool uint40_enabled = use_uint40 && std::is_same_v<SA_t, size_t>;
+
+    // If uint40 enabled, compress SA first
+    std::unique_ptr<uint40_vector> sa_compressed;
+    if (uint40_enabled) {
+        LOG_INFO("\n=== uint40 Optimization: Compressing SA ===");
+        profiler.start();
+        sa_compressed = std::make_unique<uint40_vector>(length);
+
+        // Need to convert SA_t to size_t for pack_from
+        std::vector<size_t> sa_size_t(sa_array.begin(), sa_array.end());
+        sa_compressed->pack_from(sa_size_t);
+        profiler.stop("SA compression to uint40");
+
+        // Free original SA
+        size_t sa_freed_mb = (length * sizeof(SA_t)) / (1024.0 * 1024.0);
+        size_t sa_uint40_mb = (length * 5) / (1024.0 * 1024.0);
+        LOG_INFO("  Freed size_t SA: {:.2f} MB", sa_freed_mb);
+        LOG_INFO("  uint40 SA: {:.2f} MB", sa_uint40_mb);
+        LOG_INFO("  Memory saved: {:.2f} MB ({:.1f}%%)", sa_freed_mb - sa_uint40_mb,
+                 (1.0 - 5.0/sizeof(SA_t)) * 100);
+
+        sa_array.clear();
+        sa_array.shrink_to_fit();
+    }
+
+    const SA_t* sa_ptr = uint40_enabled ? nullptr : sa_array.data();
+
     try {
         LOG_INFO("\n=== Starting Optimized Stream Processing ===");
         profiler.start();
@@ -567,15 +596,30 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         LOG_INFO("  Total chunks: {}", num_chunks);
         LOG_INFO("  Chunk size: {} MB", chunk_size / (1024 * 1024));
 
-        // Allocate result arrays
-        size_t cpu_alloc_size = 2 * length * sizeof(SA_t);
-        LOG_INFO("\nCPU Memory Allocation:");
-        LOG_INFO("  PSV + NSV results: {:.2f} MB", cpu_alloc_size / (1024.0 * 1024.0));
-        std::vector<SA_t> psv_results(length, get_max_value<SA_t>());
-        std::vector<SA_t> nsv_results(length, get_max_value<SA_t>());
+        // Allocate result arrays (use uint40 if enabled)
+        std::unique_ptr<uint40_vector> psv_uint40, nsv_uint40;
+        std::vector<SA_t> psv_results, nsv_results;
 
-        size_t sa_memory = sa_array.size() * sizeof(SA_t);
+        if (uint40_enabled) {
+            size_t cpu_alloc_size = 2 * length * 5;  // uint40 = 5 bytes
+            LOG_INFO("\nCPU Memory Allocation (uint40):");
+            LOG_INFO("  PSV + NSV results: {:.2f} MB", cpu_alloc_size / (1024.0 * 1024.0));
+            psv_uint40 = std::make_unique<uint40_vector>(length);
+            nsv_uint40 = std::make_unique<uint40_vector>(length);
+
+            size_t saved = 2 * length * (sizeof(SA_t) - 5);
+            LOG_INFO("  Memory saved vs size_t: {:.2f} MB", saved / (1024.0 * 1024.0));
+        } else {
+            size_t cpu_alloc_size = 2 * length * sizeof(SA_t);
+            LOG_INFO("\nCPU Memory Allocation:");
+            LOG_INFO("  PSV + NSV results: {:.2f} MB", cpu_alloc_size / (1024.0 * 1024.0));
+            psv_results.resize(length, get_max_value<SA_t>());
+            nsv_results.resize(length, get_max_value<SA_t>());
+        }
+
+        size_t sa_memory = uint40_enabled ? (length * 5) : (sa_array.size() * sizeof(SA_t));
         size_t input_memory = length * sizeof(uint8_t);
+        size_t cpu_alloc_size = uint40_enabled ? (2 * length * 5) : (2 * length * sizeof(SA_t));
         double estimated_peak_mb = (cpu_alloc_size + sa_memory + input_memory) / (1024.0 * 1024.0);
         LOG_INFO("  Input data (resident in main): {:.2f} MB", input_memory / (1024.0 * 1024.0));
         LOG_INFO("  SA (CPU): {:.2f} MB", sa_memory / (1024.0 * 1024.0));
@@ -620,6 +664,12 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
             cudaMalloc(&d_psv_output, chunk_size * sizeof(SA_t));
             cudaMalloc(&d_nsv_output, chunk_size * sizeof(SA_t));
 
+            // Temp buffer for uint40 unpacking (reused across chunks)
+            std::vector<uint64_t> sa_chunk_buffer;
+            if (uint40_enabled) {
+                sa_chunk_buffer.reserve(chunk_size);
+            }
+
             for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
                 size_t offset = chunk_idx * chunk_size;
                 size_t current_chunk_size = std::min(chunk_size, length - offset);
@@ -631,11 +681,22 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
 
                 cudaMalloc(&d_block_mins, num_blocks * sizeof(SA_t));
 
-                // Upload chunk to GPU
-                cudaMemcpyAsync(d_input, sa_ptr + offset,
-                              current_chunk_size * sizeof(SA_t),
-                              cudaMemcpyHostToDevice,
-                              compute_stream);
+                // Upload chunk to GPU (with uint40 conversion if needed)
+                if (uint40_enabled) {
+                    // Unpack uint40 -> size_t (OpenMP parallel)
+                    sa_chunk_buffer.clear();
+                    sa_compressed->unpack_range(offset, current_chunk_size, sa_chunk_buffer);
+
+                    cudaMemcpyAsync(d_input, sa_chunk_buffer.data(),
+                                  current_chunk_size * sizeof(SA_t),
+                                  cudaMemcpyHostToDevice,
+                                  compute_stream);
+                } else {
+                    cudaMemcpyAsync(d_input, sa_ptr + offset,
+                                  current_chunk_size * sizeof(SA_t),
+                                  cudaMemcpyHostToDevice,
+                                  compute_stream);
+                }
 
                 // Step 1: Compute PSV/NSV within blocks
                 computePSVNSVKernel<<<num_blocks, block_size, shared_mem_size, compute_stream>>>(
@@ -648,13 +709,27 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                     current_chunk_size, block_size
                 );
 
-                // Download results and block_mins
-                cudaMemcpyAsync(&psv_results[offset], d_psv_output,
-                              current_chunk_size * sizeof(SA_t),
-                              cudaMemcpyDeviceToHost, compute_stream);
-                cudaMemcpyAsync(&nsv_results[offset], d_nsv_output,
-                              current_chunk_size * sizeof(SA_t),
-                              cudaMemcpyDeviceToHost, compute_stream);
+                // Download results and block_mins (with uint40 conversion if needed)
+                std::vector<uint64_t> psv_temp, nsv_temp;
+                if (uint40_enabled) {
+                    // Download to temp buffer, then pack to uint40
+                    psv_temp.resize(current_chunk_size);
+                    nsv_temp.resize(current_chunk_size);
+
+                    cudaMemcpyAsync(psv_temp.data(), d_psv_output,
+                                  current_chunk_size * sizeof(SA_t),
+                                  cudaMemcpyDeviceToHost, compute_stream);
+                    cudaMemcpyAsync(nsv_temp.data(), d_nsv_output,
+                                  current_chunk_size * sizeof(SA_t),
+                                  cudaMemcpyDeviceToHost, compute_stream);
+                } else {
+                    cudaMemcpyAsync(&psv_results[offset], d_psv_output,
+                                  current_chunk_size * sizeof(SA_t),
+                                  cudaMemcpyDeviceToHost, compute_stream);
+                    cudaMemcpyAsync(&nsv_results[offset], d_nsv_output,
+                                  current_chunk_size * sizeof(SA_t),
+                                  cudaMemcpyDeviceToHost, compute_stream);
+                }
 
                 // Save block_mins for this chunk to global array
                 size_t block_offset = (offset / block_size);
@@ -665,10 +740,18 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                 cudaStreamSynchronize(compute_stream);
                 cudaFree(d_block_mins);
 
+                // Pack results to uint40 if enabled (OpenMP parallel)
+                if (uint40_enabled) {
+                    psv_uint40->pack_range(offset, psv_temp, 0, current_chunk_size);
+                    nsv_uint40->pack_range(offset, nsv_temp, 0, current_chunk_size);
+                }
+
                 // Collect metadata: unfound positions in this chunk
                 // After GPU boundary merge, these should only be inter-chunk boundaries
+                const uint64_t MAX_VAL = uint40_enabled ? SIZE_MAX : get_max_value<SA_t>();
                 for (size_t i = offset; i < offset + current_chunk_size; ++i) {
-                    if (is_invalid_value(psv_results[i])) {
+                    uint64_t psv_val = uint40_enabled ? psv_temp[i - offset] : psv_results[i];
+                    if (psv_val == MAX_VAL) {
                         size_t word = i >> 6;
                         size_t bit = i & 63;
                         psv_unfound_bitmap[word] |= (1ULL << bit);
@@ -680,7 +763,9 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                                 + ") during Phase 1. Reduce chunk size or adjust threshold.");
                         }
                     }
-                    if (is_invalid_value(nsv_results[i])) {
+
+                    uint64_t nsv_val = uint40_enabled ? nsv_temp[i - offset] : nsv_results[i];
+                    if (nsv_val == MAX_VAL) {
                         size_t word = i >> 6;
                         size_t bit = i & 63;
                         nsv_unfound_bitmap[word] |= (1ULL << bit);
@@ -752,16 +837,88 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         LOG_INFO("\n=== Phase 2: CPU Targeted Search ===");
         profiler.start();
 
-        // Resolve PSV using targeted search with block_min pruning
-        if (!global_psv_unfound.empty()) {
-            resolvePSVWithPruning(sa_ptr, psv_results.data(), global_psv_unfound,
-                                 global_block_mins, length, block_size);
-        }
+        if (uint40_enabled) {
+            // uint40 path: direct access via get/set (slower but memory-efficient)
+            if (!global_psv_unfound.empty()) {
+                const SA_t MAX_VAL = get_max_value<SA_t>();
+                size_t blocks_searched = 0, blocks_skipped = 0;
 
-        // Resolve NSV using targeted search with block_min pruning
-        if (!global_nsv_unfound.empty()) {
-            resolveNSVWithPruning(sa_ptr, nsv_results.data(), global_nsv_unfound,
-                                 global_block_mins, length, block_size);
+                #pragma omp parallel for reduction(+:blocks_searched,blocks_skipped)
+                for (size_t idx = 0; idx < global_psv_unfound.size(); ++idx) {
+                    size_t pos = global_psv_unfound[idx];
+                    uint64_t current = sa_compressed->get(pos);
+                    size_t current_block = pos / block_size;
+
+                    for (int block = static_cast<int>(current_block) - 1; block >= 0; --block) {
+                        if (global_block_mins[block] >= current) {
+                            blocks_skipped++;
+                            continue;
+                        }
+
+                        size_t block_start = block * block_size;
+                        size_t block_end = std::min(static_cast<size_t>((block + 1) * block_size), length);
+
+                        blocks_searched++;
+                        for (size_t i = std::min(pos, block_end) - 1; i >= block_start; --i) {
+                            if (sa_compressed->get(i) < current) {
+                                psv_uint40->set(pos, sa_compressed->get(i));
+                                goto found_psv_uint40;
+                            }
+                            if (i == 0) break;
+                        }
+                    }
+                    psv_uint40->set(pos, MAX_VAL);
+                    found_psv_uint40:;
+                }
+                LOG_INFO("  PSV resolved {} positions (searched: {} blocks, skipped: {} blocks)",
+                         global_psv_unfound.size(), blocks_searched, blocks_skipped);
+            }
+
+            if (!global_nsv_unfound.empty()) {
+                const SA_t MAX_VAL = get_max_value<SA_t>();
+                size_t total_blocks = (length + block_size - 1) / block_size;
+                size_t blocks_searched = 0, blocks_skipped = 0;
+
+                #pragma omp parallel for reduction(+:blocks_searched,blocks_skipped)
+                for (size_t idx = 0; idx < global_nsv_unfound.size(); ++idx) {
+                    size_t pos = global_nsv_unfound[idx];
+                    uint64_t current = sa_compressed->get(pos);
+                    size_t current_block = pos / block_size;
+
+                    for (size_t block = current_block + 1; block < total_blocks; ++block) {
+                        if (global_block_mins[block] >= current) {
+                            blocks_skipped++;
+                            continue;
+                        }
+
+                        size_t block_start = block * block_size;
+                        size_t block_end = std::min(static_cast<size_t>((block + 1) * block_size), length);
+
+                        blocks_searched++;
+                        for (size_t i = std::max(pos + 1, block_start); i < block_end; ++i) {
+                            if (sa_compressed->get(i) < current) {
+                                nsv_uint40->set(pos, sa_compressed->get(i));
+                                goto found_nsv_uint40;
+                            }
+                        }
+                    }
+                    nsv_uint40->set(pos, MAX_VAL);
+                    found_nsv_uint40:;
+                }
+                LOG_INFO("  NSV resolved {} positions (searched: {} blocks, skipped: {} blocks)",
+                         global_nsv_unfound.size(), blocks_searched, blocks_skipped);
+            }
+        } else {
+            // Standard path: direct array access
+            if (!global_psv_unfound.empty()) {
+                resolvePSVWithPruning(sa_ptr, psv_results.data(), global_psv_unfound,
+                                     global_block_mins, length, block_size);
+            }
+
+            if (!global_nsv_unfound.empty()) {
+                resolveNSVWithPruning(sa_ptr, nsv_results.data(), global_nsv_unfound,
+                                     global_block_mins, length, block_size);
+            }
         }
 
         // free metadata vectors
@@ -775,20 +932,53 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         // ======== PHASE 3: Text Order Conversion ========
         LOG_INFO("\n=== Phase 3: SA-order to Text-order Conversion ===");
 
-        // Convert to text order using GPU streaming (memory-efficient)
-        convertToTextOrderGPUStreaming(sa_ptr, psv_results.data(), nsv_results.data(), length);
+        if (uint40_enabled) {
+            // uint40 path: need temp buffers for GPU conversion
+            // This is the most memory-intensive step, but unavoidable
+            LOG_INFO("  Unpacking uint40 arrays for GPU text-order conversion...");
+            profiler.start();
 
-        // ======== SA Cleanup ========
-        // Critical: Free SA immediately after conversion to reduce peak memory
-        // Peak memory before: SA + PSV + NSV + data + metadata
-        // Peak memory after: PSV + NSV + data + metadata (saves ~57.6 GB for 7.2GB input)
-        size_t sa_memory_mb = (sa_array.size() * sizeof(SA_t)) / (1024.0 * 1024.0);
-        LOG_INFO("\nReleasing SA (freeing {} MB)", sa_memory_mb);
-        sa_array.clear();
-        sa_array.shrink_to_fit();
+            std::vector<uint64_t> sa_full, psv_full, nsv_full;
+            sa_compressed->unpack_all(sa_full);
+            psv_uint40->unpack_all(psv_full);
+            nsv_uint40->unpack_all(nsv_full);
+
+            profiler.stop("uint40 unpacking");
+
+            // Convert to text order using GPU
+            convertToTextOrderGPUStreaming(sa_full.data(), psv_full.data(), nsv_full.data(), length);
+
+            // Move results back (psv_full and nsv_full are already in text order now)
+            // Need to cast uint64_t -> SA_t
+            psv_results.resize(length);
+            nsv_results.resize(length);
+            #pragma omp parallel for
+            for (size_t i = 0; i < length; ++i) {
+                psv_results[i] = static_cast<SA_t>(psv_full[i]);
+                nsv_results[i] = static_cast<SA_t>(nsv_full[i]);
+            }
+
+            // Free uint40 and SA
+            size_t sa_freed = (length * 5) / (1024.0 * 1024.0);
+            sa_compressed.reset();
+            psv_uint40.reset();
+            nsv_uint40.reset();
+            sa_full.clear();
+            sa_full.shrink_to_fit();
+            LOG_INFO("  Freed uint40 SA/PSV/NSV: {:.2f} MB", sa_freed * 3);
+
+        } else {
+            // Standard path
+            convertToTextOrderGPUStreaming(sa_ptr, psv_results.data(), nsv_results.data(), length);
+
+            size_t sa_memory_mb = (sa_array.size() * sizeof(SA_t)) / (1024.0 * 1024.0);
+            LOG_INFO("\nReleasing SA (freeing {} MB)", sa_memory_mb);
+            sa_array.clear();
+            sa_array.shrink_to_fit();
+        }
 
         // ======== PHASE 4: LZ77 Factorization ========
-        LOG_INFO("\n=== Phase 4: LZ77 Factorization (SA already freed) ===");
+        LOG_INFO("\n=== Phase 4: LZ77 Factorization ===");
         profiler.start();
         std::string lz_output = output_prefix + "_lz77.bin";
         ComputeLZ77(data, psv_results.data(), nsv_results.data(), length - 1, lz_output);
@@ -927,8 +1117,8 @@ template void PipelinePSVNSVProcessor::resolvePSVWithPruning<size_t>(const size_
 template void PipelinePSVNSVProcessor::resolveNSVWithPruning<uint32_t>(const uint32_t*, uint32_t*, const std::vector<size_t>&, const std::vector<uint32_t>&, size_t, size_t);
 template void PipelinePSVNSVProcessor::resolveNSVWithPruning<size_t>(const size_t*, size_t*, const std::vector<size_t>&, const std::vector<size_t>&, size_t, size_t);
 
-template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(std::vector<uint32_t>&, const uint8_t*, size_t, const std::string&);
-template void PipelinePSVNSVProcessor::processWithStreams<size_t>(std::vector<size_t>&, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(std::vector<uint32_t>&, const uint8_t*, size_t, const std::string&, bool);
+template void PipelinePSVNSVProcessor::processWithStreams<size_t>(std::vector<size_t>&, const uint8_t*, size_t, const std::string&, bool);
 
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<uint32_t>(const uint8_t*, size_t, uint32_t, uint32_t, size_t);
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<size_t>(const uint8_t*, size_t, size_t, size_t, size_t);

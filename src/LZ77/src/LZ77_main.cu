@@ -115,9 +115,10 @@ std::vector<SA_t> build_SA_on_CPU(const std::vector<uint8_t>& data) {
  * Strategy: Check memory first, then choose SA construction method and processing path
  * @param data Input file data as byte vector
  * @param output_prefix Prefix for output files
+ * @param use_uint40 Whether to use uint40 compression for host arrays (size_t only)
  */
 template<typename SA_t>
-void processLZ77(const std::vector<uint8_t>& data, const std::string& output_prefix) {
+void processLZ77(const std::vector<uint8_t>& data, const std::string& output_prefix, bool use_uint40 = false) {
     size_t length = data.size();
 
     // Step 1: Check GPU memory to decide which path to take
@@ -155,7 +156,13 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
     } else {
         // Path 4: Stream processing (memory-limited)
         LOG_INFO("\n=== Path 4: Stream Mode ===");
-        LOG_INFO("Building SA on CPU (SDSL)...");
+
+        // Check if uint40 optimization applies
+        if (use_uint40 && std::is_same_v<SA_t, size_t>) {
+            LOG_INFO("uint40 optimization enabled (saves 37.5%% memory on host)");
+        }
+
+        LOG_INFO("Building SA on CPU (libsais)...");
 
         profiler.start();
         std::vector<SA_t> h_SA = build_SA_on_CPU<SA_t>(data);
@@ -163,7 +170,7 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
 
         LOG_INFO("SA construction completed on CPU");
 
-        processor.template processWithStreams<SA_t>(h_SA, data.data(), length, output_prefix);
+        processor.template processWithStreams<SA_t>(h_SA, data.data(), length, output_prefix, use_uint40);
     }
 }
 
@@ -175,6 +182,7 @@ int main(int argc, char **argv) {
         LOG_ERROR("Usage: {} <input_file> <output_prefix> [options]", argv[0]);
         LOG_ERROR("Options:");
         LOG_ERROR("  --force-size-t    Force size_t SA type (test 64-bit path)");
+        LOG_ERROR("  --uint40          Use uint40 compression for host arrays (saves 37.5%% memory, size_t only)");
         return 1;
     }
 
@@ -183,11 +191,14 @@ int main(int argc, char **argv) {
 
     // Parse optional flags
     bool force_size_t = false;
+    bool use_uint40 = false;
 
     for (int i = 3; i < argc; ++i) {
         std::string arg(argv[i]);
         if (arg == "--force-size-t") {
             force_size_t = true;
+        } else if (arg == "--uint40") {
+            use_uint40 = true;
         } else {
             LOG_ERROR("Unknown option: {}", arg);
             return 1;
@@ -227,6 +238,13 @@ int main(int argc, char **argv) {
             LOG_INFO("SA Type: size_t (forced, 64-bit)");
         }
 
+        // Validate uint40 option
+        if (use_uint40 && !force_size_t && length <= UINT32_MAX) {
+            LOG_WARN("--uint40 requires size_t mode. Use --force-size-t for files <= 4GB");
+            LOG_INFO("Continuing without uint40 optimization");
+            use_uint40 = false;
+        }
+
         // Choose SA type based on file size or forced option
         if (force_size_t || length > UINT32_MAX) {
             if (length <= UINT32_MAX) {
@@ -234,10 +252,10 @@ int main(int argc, char **argv) {
             } else {
                 LOG_INFO("File size requires size_t, using 64-bit processing");
             }
-            processLZ77<size_t>(data, output_prefix);
+            processLZ77<size_t>(data, output_prefix, use_uint40);
         } else {
             LOG_INFO("File size fits in uint32_t, using optimized 32-bit processing");
-            processLZ77<uint32_t>(data, output_prefix);
+            processLZ77<uint32_t>(data, output_prefix, false);
         }
 
         LOG_INFO("\nLZ77 compression completed successfully");

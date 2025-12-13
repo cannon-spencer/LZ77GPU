@@ -9,6 +9,7 @@
 #include <thrust/sort.h>
 #include <thrust/device_vector.h>
 #include <thrust/copy.h>
+#include "../../Util/include/uint40_vector.cuh"
 
 constexpr size_t DEFAULT_BLOCK_SIZE = 1024;
 constexpr float MEMORY_RESERVE_RATIO = 0.9f;
@@ -90,7 +91,8 @@ public:
 
     // Path 4: Stream processing with CPU SA (memory-limited)
     template<typename SA_t>
-    void processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
+    void processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length,
+                           const std::string& output_prefix, bool use_uint40 = false);
 
 private:
     GPUProfiler profiler;
