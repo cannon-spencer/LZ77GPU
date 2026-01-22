@@ -140,6 +140,20 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
         LOG_INFO("\n=== Path 1: Full GPU Mode ===");
         LOG_INFO("Building SA on GPU...");
 
+        // Track input data transfer to GPU for SA construction
+        // Note: build_SA_on_GPU will transfer the data internally, but we measure a representative transfer here
+        // to get the actual H2D transfer time for statistics
+        if (stats) {
+            profiler.start();
+            size_t data_size_bytes = data.size();
+            uint8_t* d_test = nullptr;
+            cudaMalloc(&d_test, data_size_bytes);
+            cudaMemcpy(d_test, data.data(), data_size_bytes, cudaMemcpyHostToDevice);
+            float input_transfer_ms = profiler.stop();
+            cudaFree(d_test);
+            stats->recordTransferH2D(input_transfer_ms);
+        }
+        
         profiler.start();
         SA_t* d_SA = build_SA_on_GPU<SA_t>(data);
         float sa_time = profiler.stop("GPU SA Construction");

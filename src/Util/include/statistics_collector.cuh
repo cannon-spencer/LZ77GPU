@@ -5,6 +5,7 @@
 #include <string>
 #include <iomanip>
 #include <sstream>
+#include <iostream>
 #include <sys/resource.h>
 #include <unistd.h>
 #include <cstdio>
@@ -12,7 +13,8 @@
 
 /**
  * Statistics collector for comprehensive benchmarking
- * Tracks: wall time, SA time, LZ77 time, transfer times, host RAM, GPU RAM
+ * Tracks: wall time, SA time, LZ77 time (GPU compute, CPU compute, transfers), 
+ *         transfer times, host RAM, GPU RAM
  */
 class StatisticsCollector {
 private:
@@ -20,9 +22,21 @@ private:
     std::chrono::high_resolution_clock::time_point wall_end;
     
     double sa_construction_time_ms = 0.0;
+    
+    // LZ77 timing breakdown
+    double lz77_gpu_computation_time_ms = 0.0;  // GPU phases 1-3 (PSV/NSV computation)
+    double lz77_cpu_computation_time_ms = 0.0;   // CPU ComputeLZ77 function
+    double lz77_transfer_time_ms = 0.0;          // Data transfers during LZ77 phase (H2D + D2H)
+    
     double lz77_processing_time_ms = 0.0;
+    
+    // Global transfer times (all phases combined)
     double transfer_time_h2d_ms = 0.0;  // Host to Device
-    double transfer_time_d2h_ms = 0.0;  // Device to Host
+    double transfer_time_d2h_ms = 0.0;   // Device to Host
+    
+    // LZ77-specific transfer times
+    double lz77_transfer_h2d_ms = 0.0;
+    double lz77_transfer_d2h_ms = 0.0;
     
     size_t peak_host_ram_bytes = 0;
     size_t peak_gpu_ram_bytes = 0;
@@ -31,6 +45,7 @@ private:
     
     bool sa_time_set = false;
     bool lz77_time_set = false;
+    bool lz77_gpu_time_set = false;
     
     // Helper to get current process RSS (Resident Set Size) in bytes
     // Linux-only: reads from /proc/self/status (standard on Linux systems)
@@ -42,8 +57,9 @@ private:
         char line[128];
         while (fgets(line, sizeof(line), file)) {
             if (strncmp(line, "VmRSS:", 6) == 0) {
-                sscanf(line, "VmRSS: %zu kB", &rss);
-                rss *= 1024;  // Convert KB to bytes
+                if (sscanf(line, "VmRSS: %zu kB", &rss) == 1) {
+                    rss *= 1024;  // Convert KB to bytes
+                }
                 break;
             }
         }
@@ -66,6 +82,35 @@ private:
             peak_gpu_ram_bytes = used;
         }
     }
+    
+    static const int TABLE_WIDTH = 65;
+
+    void printSectionHeader(const std::string& title) const {
+        int padding = TABLE_WIDTH - 2 - static_cast<int>(title.length()) - 1;  // "| " + title + "|"
+        if (padding < 0) padding = 0;
+        std::cout << "| " << title << std::string(padding, ' ') << "|\n";
+    }
+
+    void printFormattedLine(const std::string& label, double value, const std::string& unit) const {
+        const int LABEL_START = 2;  // "| "
+        const int NUMBER_WIDTH = 12;
+        const int UNIT_WIDTH = 5;   // " ms |" or " s  |" (one space before |)
+        
+        int label_width = label.length();
+        int available_width = TABLE_WIDTH - LABEL_START - NUMBER_WIDTH - UNIT_WIDTH;
+        int padding = available_width - label_width;
+        
+        std::cout << "| " << label;
+        if (padding > 0) {
+            std::cout << std::string(padding, ' ');
+        }
+        std::cout << std::right << std::setw(NUMBER_WIDTH) << std::fixed << std::setprecision(2) << value;
+        if (unit.length() == 1) {
+            std::cout << " " << unit << "  |\n";
+        } else {
+            std::cout << " " << unit << " |\n";
+        }
+    }
 
 public:
     StatisticsCollector() {
@@ -83,8 +128,21 @@ public:
     }
     
     void recordLZ77Time(double ms) {
-        lz77_processing_time_ms = ms;
+        lz77_processing_time_ms = ms;  // Total LZ77 processing time
         lz77_time_set = true;
+        updatePeakHostRAM();
+        updatePeakGPURAM();
+    }
+    
+    void recordLZ77CPUTime(double ms) {
+        lz77_cpu_computation_time_ms = ms;
+        updatePeakHostRAM();
+        updatePeakGPURAM();
+    }
+    
+    void recordLZ77GPUTime(double ms) {
+        lz77_gpu_computation_time_ms = ms;
+        lz77_gpu_time_set = true;
         updatePeakHostRAM();
         updatePeakGPURAM();
     }
@@ -96,6 +154,22 @@ public:
     
     void recordTransferD2H(double ms) {
         transfer_time_d2h_ms += ms;
+        updatePeakHostRAM();
+        updatePeakGPURAM();
+    }
+    
+    // Record LZ77-specific transfers (separate from SA phase transfers)
+    void recordLZ77TransferH2D(double ms) {
+        lz77_transfer_h2d_ms += ms;
+        lz77_transfer_time_ms += ms;
+        transfer_time_h2d_ms += ms;  // Also add to global total
+        updatePeakGPURAM();
+    }
+    
+    void recordLZ77TransferD2H(double ms) {
+        lz77_transfer_d2h_ms += ms;
+        lz77_transfer_time_ms += ms;
+        transfer_time_d2h_ms += ms;  // Also add to global total
         updatePeakHostRAM();
         updatePeakGPURAM();
     }
@@ -126,58 +200,67 @@ public:
         double wall_time_sec = getWallTimeSec();
         
         std::cout << "\n";
-        std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
-        std::cout << "║              LZ77 GPU COMPRESSION STATISTICS                  ║\n";
-        std::cout << "╠════════════════════════════════════════════════════════════════╣\n";
+        std::cout << "+===============================================================+\n";
+        std::cout << "|              LZ77 GPU COMPRESSION STATISTICS                  |\n";
+        std::cout << "+===============================================================+\n";
         
         // Timing Section
-        std::cout << "║ TIMING                                                         ║\n";
-        std::cout << "╠════════════════════════════════════════════════════════════════╣\n";
-        std::cout << std::fixed << std::setprecision(2);
-        std::cout << "║  Wall Time (Total):                    " << std::setw(12) << wall_time_ms << " ms  ║\n";
-        std::cout << "║                                       " << std::setw(12) << wall_time_sec << " s   ║\n";
+        printSectionHeader("TIMING");
+        std::cout << "+---------------------------------------------------------------+\n";
+        printFormattedLine("Wall Time (Total):", wall_time_ms, "ms");
+        printFormattedLine("", wall_time_sec, "s");
         
         if (sa_time_set) {
-            std::cout << "║  SA Construction:                     " << std::setw(12) << sa_construction_time_ms << " ms  ║\n";
+            printFormattedLine("SA Construction:", sa_construction_time_ms, "ms");
         }
         
+        // LZ77 breakdown
         if (lz77_time_set) {
-            std::cout << "║  LZ77 Processing:                     " << std::setw(12) << lz77_processing_time_ms << " ms  ║\n";
+            printFormattedLine("LZ77 Processing:", lz77_processing_time_ms, "ms");
+            if (lz77_gpu_time_set) {
+                printFormattedLine("  - GPU Computation:", lz77_gpu_computation_time_ms, "ms");
+            }
+            if (lz77_cpu_computation_time_ms > 0) {
+                printFormattedLine("  - CPU Computation:", lz77_cpu_computation_time_ms, "ms");
+            }
+            if (lz77_transfer_time_ms > 0) {
+                printFormattedLine("  - Data Transfer:", lz77_transfer_time_ms, "ms");
+            }
         }
         
-        double other_time = wall_time_ms - sa_construction_time_ms - lz77_processing_time_ms;
-        if (other_time > 0) {
-            std::cout << "║  Other Operations:                    " << std::setw(12) << other_time << " ms  ║\n";
+        double total_tracked = sa_construction_time_ms + lz77_processing_time_ms;
+        double remainder_time = wall_time_ms - total_tracked;
+        if (remainder_time > 0) {
+            printFormattedLine("Remainder Time:", remainder_time, "ms");
         }
         
-        std::cout << "╠════════════════════════════════════════════════════════════════╣\n";
+        std::cout << "+---------------------------------------------------------------+\n";
         
         // Transfer Section
-        std::cout << "║ DATA TRANSFER                                                  ║\n";
-        std::cout << "╠════════════════════════════════════════════════════════════════╣\n";
-        std::cout << "║  Host → GPU (H2D):                     " << std::setw(12) << transfer_time_h2d_ms << " ms  ║\n";
-        std::cout << "║  GPU → Host (D2H):                     " << std::setw(12) << transfer_time_d2h_ms << " ms  ║\n";
+        printSectionHeader("DATA TRANSFER");
+        std::cout << "+---------------------------------------------------------------+\n";
+        printFormattedLine("Host -> GPU (H2D):", transfer_time_h2d_ms, "ms");
+        printFormattedLine("GPU -> Host (D2H):", transfer_time_d2h_ms, "ms");
         double total_transfer = transfer_time_h2d_ms + transfer_time_d2h_ms;
-        std::cout << "║  Total Transfer Time:                   " << std::setw(12) << total_transfer << " ms  ║\n";
+        printFormattedLine("Total Transfer Time:", total_transfer, "ms");
         if (wall_time_ms > 0) {
             double transfer_percent = (total_transfer / wall_time_ms) * 100.0;
-            std::cout << "║  Transfer Overhead:                    " << std::setw(11) << transfer_percent << " %   ║\n";
+            printFormattedLine("Transfer Overhead:", transfer_percent, "%");
         }
         
-        std::cout << "╠════════════════════════════════════════════════════════════════╣\n";
+        std::cout << "+---------------------------------------------------------------+\n";
         
         // Memory Section
-        std::cout << "║ MEMORY USAGE                                                  ║\n";
-        std::cout << "╠════════════════════════════════════════════════════════════════╣\n";
-        std::cout << std::setprecision(2);
-        std::cout << "║  Host RAM (Peak):                      " << std::setw(12) << (peak_host_ram_bytes / (1024.0 * 1024.0)) << " MB  ║\n";
-        std::cout << "║                                       " << std::setw(12) << (peak_host_ram_bytes / (1024.0 * 1024.0 * 1024.0)) << " GB  ║\n";
-        std::cout << "║  GPU RAM (Peak):                      " << std::setw(12) << (peak_gpu_ram_bytes / (1024.0 * 1024.0)) << " MB  ║\n";
-        std::cout << "║                                       " << std::setw(12) << (peak_gpu_ram_bytes / (1024.0 * 1024.0 * 1024.0)) << " GB  ║\n";
-        std::cout << "║  GPU RAM (Total Available):            " << std::setw(12) << (initial_gpu_total_bytes / (1024.0 * 1024.0 * 1024.0)) << " GB  ║\n";
-        std::cout << "║  GPU RAM (Initial Free):               " << std::setw(12) << (initial_gpu_free_bytes / (1024.0 * 1024.0 * 1024.0)) << " GB  ║\n";
+        printSectionHeader("MEMORY USAGE");
+        std::cout << "+---------------------------------------------------------------+\n";
+        printFormattedLine("Host RAM (Peak):", peak_host_ram_bytes / (1024.0 * 1024.0), "MB");
+        printFormattedLine("", peak_host_ram_bytes / (1024.0 * 1024.0 * 1024.0), "GB");
+        printFormattedLine("GPU RAM (Peak):", peak_gpu_ram_bytes / (1024.0 * 1024.0), "MB");
+        printFormattedLine("", peak_gpu_ram_bytes / (1024.0 * 1024.0 * 1024.0), "GB");
+        printFormattedLine("GPU RAM (Total Available):", initial_gpu_total_bytes / (1024.0 * 1024.0 * 1024.0), "GB");
+        printFormattedLine("GPU RAM (Initial Free):", initial_gpu_free_bytes / (1024.0 * 1024.0 * 1024.0), "GB");
         
-        std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
+        std::cout << "+===============================================================+\n";
         std::cout << std::endl;
     }
     
@@ -187,13 +270,17 @@ public:
         double total_transfer = transfer_time_h2d_ms + transfer_time_d2h_ms;
         
         std::cout << "\n=== CSV Statistics ===" << std::endl;
-        std::cout << "wall_time_ms,sa_construction_ms,lz77_processing_ms,"
+        std::cout << "wall_time_ms,sa_construction_ms,"
+                  << "lz77_processing_ms,lz77_gpu_computation_ms,lz77_cpu_computation_ms,lz77_transfer_ms,"
                   << "transfer_h2d_ms,transfer_d2h_ms,total_transfer_ms,"
                   << "host_ram_mb,host_ram_gb,gpu_ram_mb,gpu_ram_gb" << std::endl;
         std::cout << std::fixed << std::setprecision(3);
         std::cout << wall_time_ms << ","
                   << sa_construction_time_ms << ","
                   << lz77_processing_time_ms << ","
+                  << lz77_gpu_computation_time_ms << ","
+                  << lz77_cpu_computation_time_ms << ","
+                  << lz77_transfer_time_ms << ","
                   << transfer_time_h2d_ms << ","
                   << transfer_time_d2h_ms << ","
                   << total_transfer << ","

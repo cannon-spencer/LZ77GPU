@@ -9,6 +9,7 @@
 *.log
 *.fasta
 *.bin
+*.sh
 *.slurm
 build/*
 
