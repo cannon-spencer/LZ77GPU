@@ -12,6 +12,7 @@
 #include "prefix_doubling.cuh"
 #include "LZ77_processor.cuh"
 #include "logger.cuh"
+#include "../../Util/include/statistics_collector.cuh"
 
 // libsais for fast SA construction
 #include <libsais.h>
@@ -118,7 +119,7 @@ std::vector<SA_t> build_SA_on_CPU(const std::vector<uint8_t>& data) {
  * @param use_uint40 Whether to use uint40 compression for host arrays (size_t only)
  */
 template<typename SA_t>
-void processLZ77(const std::vector<uint8_t>& data, const std::string& output_prefix, bool use_uint40 = false) {
+void processLZ77(const std::vector<uint8_t>& data, const std::string& output_prefix, bool use_uint40 = false, StatisticsCollector* stats = nullptr) {
     size_t length = data.size();
 
     // Step 1: Check GPU memory to decide which path to take
@@ -141,12 +142,17 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
 
         profiler.start();
         SA_t* d_SA = build_SA_on_GPU<SA_t>(data);
-        profiler.stop("GPU SA Construction");
+        float sa_time = profiler.stop("GPU SA Construction");
+        
+        if (stats) {
+            stats->recordSATime(sa_time);
+            stats->updateMemoryStats();
+        }
 
         LOG_INFO("SA construction completed, SA remains on GPU (zero-copy)");
 
         try {
-            processor.template processFullGPUWithGPUSA<SA_t>(d_SA, data.data(), length, output_prefix);
+            processor.template processFullGPUWithGPUSA<SA_t>(d_SA, data.data(), length, output_prefix, stats);
             cudaFree(d_SA);
         } catch (...) {
             cudaFree(d_SA);
@@ -166,11 +172,16 @@ void processLZ77(const std::vector<uint8_t>& data, const std::string& output_pre
 
         profiler.start();
         std::vector<SA_t> h_SA = build_SA_on_CPU<SA_t>(data);
-        profiler.stop("CPU SA Construction");
+        float sa_time = profiler.stop("CPU SA Construction");
+        
+        if (stats) {
+            stats->recordSATime(sa_time);
+            stats->updateMemoryStats();
+        }
 
         LOG_INFO("SA construction completed on CPU");
 
-        processor.template processWithStreams<SA_t>(h_SA, data.data(), length, output_prefix, use_uint40);
+        processor.template processWithStreams<SA_t>(h_SA, data.data(), length, output_prefix, use_uint40, stats);
     }
 }
 
@@ -227,6 +238,9 @@ int main(int argc, char **argv) {
 
     LOG_INFO("Input file size: {} bytes", length);
 
+    // Initialize statistics collector
+    StatisticsCollector stats;
+
     try {
         // Display GPU info
         size_t free_mem, total_mem;
@@ -252,13 +266,18 @@ int main(int argc, char **argv) {
             } else {
                 LOG_INFO("File size requires size_t, using 64-bit processing");
             }
-            processLZ77<size_t>(data, output_prefix, use_uint40);
+            processLZ77<size_t>(data, output_prefix, use_uint40, &stats);
         } else {
             LOG_INFO("File size fits in uint32_t, using optimized 32-bit processing");
-            processLZ77<uint32_t>(data, output_prefix, false);
+            processLZ77<uint32_t>(data, output_prefix, false, &stats);
         }
 
         LOG_INFO("\nLZ77 compression completed successfully");
+        
+        // Finalize and print statistics
+        stats.finalize();
+        stats.printSummary();
+        stats.printCSV();
 
     } catch (const std::exception& e) {
         LOG_ERROR("Error occurred: {}", e.what());

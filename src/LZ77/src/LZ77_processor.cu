@@ -66,6 +66,14 @@ float GPUProfiler::stop(const char* operation_name) {
     return milliseconds;
 }
 
+float GPUProfiler::stop() {
+    cudaEventRecord(stop_event);
+    cudaEventSynchronize(stop_event);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start_event, stop_event);
+    return milliseconds;
+}
+
 // Template kernel implementations
 template<typename SA_t>
 __global__ void computePSVNSVKernel(
@@ -311,7 +319,7 @@ PipelinePSVNSVProcessor::PipelinePSVNSVProcessor() {
 }
 
 template<typename SA_t>
-void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix) {
+void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix, StatisticsCollector* stats) {
     profiler.start();
 
     const int block_size = DEFAULT_BLOCK_SIZE;
@@ -389,8 +397,21 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
 
         profiler.stop("Phase 3: Text order conversion (4n peak - optimal)");
 
-        cudaMemcpy(h_psv_text_order.data(), d_psv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_nsv_text_order.data(), d_nsv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        // Track transfer time (D2H)
+        if (stats) {
+            profiler.start();
+            cudaMemcpy(h_psv_text_order.data(), d_psv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+            float transfer_time = profiler.stop();
+            stats->recordTransferD2H(transfer_time);
+            
+            profiler.start();
+            cudaMemcpy(h_nsv_text_order.data(), d_nsv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+            transfer_time = profiler.stop();
+            stats->recordTransferD2H(transfer_time);
+        } else {
+            cudaMemcpy(h_psv_text_order.data(), d_psv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_nsv_text_order.data(), d_nsv_sa_order, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
+        }
 
         cudaFree(d_combined);  // Free single combined allocation
         // Note: d_sa_array is NOT freed here - caller is responsible for freeing it
@@ -411,7 +432,12 @@ void PipelinePSVNSVProcessor::processFullGPUWithGPUSA(SA_t* d_sa_array, const ui
     profiler.start();
     std::string lz_output = output_prefix + "_lz77.bin";
     ComputeLZ77(data, h_psv_text_order.data(), h_nsv_text_order.data(), length - 1, lz_output);
-    profiler.stop("LZ77 Processing");
+    float lz77_time = profiler.stop("LZ77 Processing");
+    
+    if (stats) {
+        stats->recordLZ77Time(lz77_time);
+        stats->updateMemoryStats();
+    }
 }
 
 
@@ -529,7 +555,7 @@ void PipelinePSVNSVProcessor::resolveNSVWithPruning(
 
 template<typename SA_t>
 void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length,
-                                                  const std::string& output_prefix, bool use_uint40) {
+                                                  const std::string& output_prefix, bool use_uint40, StatisticsCollector* stats) {
     // uint40 optimization: only applies to size_t mode
     const bool uint40_enabled = use_uint40 && std::is_same_v<SA_t, size_t>;
 
@@ -682,6 +708,7 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                 cudaMalloc(&d_block_mins, num_blocks * sizeof(SA_t));
 
                 // Upload chunk to GPU (with uint40 conversion if needed)
+                if (stats) profiler.start();
                 if (uint40_enabled) {
                     // Unpack uint40 -> size_t (OpenMP parallel)
                     sa_chunk_buffer.clear();
@@ -697,6 +724,11 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                                   cudaMemcpyHostToDevice,
                                   compute_stream);
                 }
+                if (stats) {
+                    cudaStreamSynchronize(compute_stream);
+                    float transfer_time = profiler.stop();
+                    stats->recordTransferH2D(transfer_time);
+                }
 
                 // Step 1: Compute PSV/NSV within blocks
                 computePSVNSVKernel<<<num_blocks, block_size, shared_mem_size, compute_stream>>>(
@@ -711,6 +743,7 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
 
                 // Download results and block_mins (with uint40 conversion if needed)
                 std::vector<uint64_t> psv_temp, nsv_temp;
+                if (stats) profiler.start();
                 if (uint40_enabled) {
                     // Download to temp buffer, then pack to uint40
                     psv_temp.resize(current_chunk_size);
@@ -738,6 +771,10 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
                               cudaMemcpyDeviceToHost, compute_stream);
 
                 cudaStreamSynchronize(compute_stream);
+                if (stats) {
+                    float transfer_time = profiler.stop();
+                    stats->recordTransferD2H(transfer_time);
+                }
                 cudaFree(d_block_mins);
 
                 // Pack results to uint40 if enabled (OpenMP parallel)
@@ -982,7 +1019,12 @@ void PipelinePSVNSVProcessor::processWithStreams(std::vector<SA_t>& sa_array, co
         profiler.start();
         std::string lz_output = output_prefix + "_lz77.bin";
         ComputeLZ77(data, psv_results.data(), nsv_results.data(), length - 1, lz_output);
-        profiler.stop("LZ77 Processing");
+        float lz77_time = profiler.stop("LZ77 Processing");
+        
+        if (stats) {
+            stats->recordLZ77Time(lz77_time);
+            stats->updateMemoryStats();
+        }
 
         LOG_INFO("\n=== Stream Processing Complete ===");
 
@@ -1071,14 +1113,18 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
         std::fflush(stdout);
 
         // Upload SA chunk, PSV chunk, and NSV chunk
+        profiler.start();
         cudaMemcpyAsync(d_sa_chunk, sa_array + offset, current_chunk * sizeof(SA_t),
                        cudaMemcpyHostToDevice, stream);
         cudaMemcpyAsync(d_psv_in, psv + offset, current_chunk * sizeof(SA_t),
                        cudaMemcpyHostToDevice, stream);
         cudaMemcpyAsync(d_nsv_in, nsv + offset, current_chunk * sizeof(SA_t),
                        cudaMemcpyHostToDevice, stream);
-
         cudaStreamSynchronize(stream);
+        float h2d_time = profiler.stop();
+        
+        // Note: We don't track this in stats here since convertToTextOrderGPUStreaming
+        // doesn't have access to stats. The main transfer tracking happens in processWithStreams.
 
         // Dual scatter: process both PSV and NSV in one kernel
         int blocks = (current_chunk + 255) / 256;
@@ -1095,6 +1141,7 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
     cudaMemcpy(psv, d_psv_out, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
     cudaMemcpy(nsv, d_nsv_out, length * sizeof(SA_t), cudaMemcpyDeviceToHost);
     profiler.stop("  PSV+NSV download");
+    // Note: Transfer time tracking for this is handled in processWithStreams
 
     // Cleanup
     cudaStreamDestroy(stream);
@@ -1108,8 +1155,8 @@ void PipelinePSVNSVProcessor::convertToTextOrderGPUStreaming(
 }
 
 // Explicit template instantiations
-template void PipelinePSVNSVProcessor::processFullGPUWithGPUSA<uint32_t>(uint32_t*, const uint8_t*, size_t, const std::string&);
-template void PipelinePSVNSVProcessor::processFullGPUWithGPUSA<size_t>(size_t*, const uint8_t*, size_t, const std::string&);
+template void PipelinePSVNSVProcessor::processFullGPUWithGPUSA<uint32_t>(uint32_t*, const uint8_t*, size_t, const std::string&, StatisticsCollector*);
+template void PipelinePSVNSVProcessor::processFullGPUWithGPUSA<size_t>(size_t*, const uint8_t*, size_t, const std::string&, StatisticsCollector*);
 
 template void PipelinePSVNSVProcessor::resolvePSVWithPruning<uint32_t>(const uint32_t*, uint32_t*, const std::vector<size_t>&, const std::vector<uint32_t>&, size_t, size_t);
 template void PipelinePSVNSVProcessor::resolvePSVWithPruning<size_t>(const size_t*, size_t*, const std::vector<size_t>&, const std::vector<size_t>&, size_t, size_t);
@@ -1117,8 +1164,8 @@ template void PipelinePSVNSVProcessor::resolvePSVWithPruning<size_t>(const size_
 template void PipelinePSVNSVProcessor::resolveNSVWithPruning<uint32_t>(const uint32_t*, uint32_t*, const std::vector<size_t>&, const std::vector<uint32_t>&, size_t, size_t);
 template void PipelinePSVNSVProcessor::resolveNSVWithPruning<size_t>(const size_t*, size_t*, const std::vector<size_t>&, const std::vector<size_t>&, size_t, size_t);
 
-template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(std::vector<uint32_t>&, const uint8_t*, size_t, const std::string&, bool);
-template void PipelinePSVNSVProcessor::processWithStreams<size_t>(std::vector<size_t>&, const uint8_t*, size_t, const std::string&, bool);
+template void PipelinePSVNSVProcessor::processWithStreams<uint32_t>(std::vector<uint32_t>&, const uint8_t*, size_t, const std::string&, bool, StatisticsCollector*);
+template void PipelinePSVNSVProcessor::processWithStreams<size_t>(std::vector<size_t>&, const uint8_t*, size_t, const std::string&, bool, StatisticsCollector*);
 
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<uint32_t>(const uint8_t*, size_t, uint32_t, uint32_t, size_t);
 template std::pair<std::pair<size_t, size_t>, size_t> PipelinePSVNSVProcessor::LZFactor<size_t>(const uint8_t*, size_t, size_t, size_t, size_t);

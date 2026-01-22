@@ -10,6 +10,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/copy.h>
 #include "../../Util/include/uint40_vector.cuh"
+#include "../../Util/include/statistics_collector.cuh"
 
 constexpr size_t DEFAULT_BLOCK_SIZE = 1024;
 constexpr float MEMORY_RESERVE_RATIO = 0.9f;
@@ -65,6 +66,7 @@ public:
     ~GPUProfiler();
     void start();
     float stop(const char* operation_name);
+    float stop();  // Stop without logging
 
 private:
     cudaEvent_t start_event, stop_event;
@@ -87,12 +89,12 @@ public:
 
     // Path 1: Full GPU processing with GPU SA (zero-copy, fastest)
     template<typename SA_t>
-    void processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix);
+    void processFullGPUWithGPUSA(SA_t* d_sa_array, const uint8_t* data, size_t length, const std::string& output_prefix, StatisticsCollector* stats = nullptr);
 
     // Path 4: Stream processing with CPU SA (memory-limited)
     template<typename SA_t>
     void processWithStreams(std::vector<SA_t>& sa_array, const uint8_t* data, size_t length,
-                           const std::string& output_prefix, bool use_uint40 = false);
+                           const std::string& output_prefix, bool use_uint40 = false, StatisticsCollector* stats = nullptr);
 
 private:
     GPUProfiler profiler;
