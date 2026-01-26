@@ -11,7 +11,11 @@
 *.bin
 *.sh
 *.slurm
+*.py
+*.xlsx
 build/*
+logs/*
+results/*
 
 temp
 test
