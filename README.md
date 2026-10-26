@@ -1,175 +1,156 @@
 # **GZLZ** — GPU-Accelerated LZ77 Compression
 
-[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](#license)
-[![libCUBWT](https://img.shields.io/badge/libCUBWT-GPU--BWT-blue.svg)](https://github.com/kobolabs/libcubwt)
-[![SDSL-lite](https://img.shields.io/badge/SDSL--lite-succinct--data--structures-lightgrey.svg)](https://github.com/simongog/sdsl-lite)
+![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
 
+> [!NOTE]
+> LZ77 is a lossless compression method that stores each repeated substring as a pointer to an earlier copy. Computing that factorization has stayed mostly single-threaded and in order, which is what limits it on large datasets.
 
-GZLZ is an advanced GPU-accelerated toolkit designed specifically for efficient suffix array (SA) construction and LZ77 compression algorithms. Leveraging cutting-edge CUDA implementations, GZLZ significantly enhances speed and memory efficiency, making it ideal for bioinformatics and large-scale data compression tasks.
+GZLZ computes the LZ77 factorization on a GPU. It builds a suffix array with prefix doubling, finds previous- and next-smaller values, and turns those into factors. Inputs that do not fit in device memory stream through a hybrid CPU–GPU path.
 
----
+**Paper:** [GZLZ: GPU-Accelerated LZ77 Compression](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7328580) · DOI: [10.2139/ssrn.7328580](https://doi.org/10.2139/ssrn.7328580)
 
-## Key Highlights
-
-* **Optimized GPU Algorithms:** Achieves superior speed over traditional CPU libraries and superiour memory efficiency over existing GPU libraries.
-* **Tailored for Bioinformatics:** Specifically optimized for massive genomic datasets.
-* **Memory-Efficient Compression:** Stream-based processing suitable for extremely large datasets.
+Rahul Varki, Mohammadali Serajian, Cannon Spencer, Aaron Hong, Oded Green, and Christina Boucher.
 
 ---
 
-## Performance Benchmarks
+## Quick start
 
-Tested on NVIDIA A100 GPU (80 GB VRAM):
+```bash
+git clone https://github.com/cannon-spencer/LZ77GPU.git
+cd LZ77GPU
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j$(nproc)
 
-| Dataset          | Method              | Runtime (ms)    | GPU Peak Memory (MiB) | Speedup vs CPU |
-| ---------------- | ------------------- | --------------- | --------------------- | -------------- |
-| **32× (1.8 GB)** | libCUBWT (GPU)      | 10,449          | 55,252                | **25.83×**     |
-| **32× (1.8 GB)** | **GZLZ (GPU)**      | **96,886**      | **29,356**            | **2.78×**      |
-| **32× (1.8 GB)** | SDSL (CPU, 32-core) | 269,883         | —                     | 1.00×          |
-| **64× (3.7 GB)** | libCUBWT (GPU)      | —               | —                     | —              |
-| **64× (3.7 GB)** | **GZLZ (GPU)**      | **294,324**     | **58,806**            | **2.05×**      |
-| **64× (3.7 GB)** | SDSL (CPU, 32-core) | 604,863         | —                     | 1.00×          |
-
----
-
-## Understanding the Algorithms
-
-### What is a Suffix Array?
-
-A suffix array is a data structure that stores the starting indices of all suffixes of a given string, sorted in lexicographic (dictionary) order. By organizing the string's suffixes this way, it enables highly efficient solutions to common string-processing tasks such as substring search, longest repeated substring detection, and pattern matching. **We compute the Suffix Array using Prefix Doubling**
-
-**Example:**
-
-```
-String: "BANANA"
-Sorted Suffixes:
-0: A
-1: ANA
-2: ANANA
-3: BANANA
-4: NA
-5: NANA
+./lz77 <input_file> <output_prefix>
+./sa_profiler <input_file>
 ```
 
-### Prefix Doubling Architecture & Kernel Flow
+---
 
-GZLZ implements an efficient **Prefix Doubling Suffix Array** construction on the GPU, orchestrating multiple CUDA kernels and memory operations to maximize parallel throughput while minimizing memory footprint.
-Each iteration doubles the prefix length and re-ranks suffixes using a series of compute, sort, and scan operations. The flow is fully adaptive, monitoring device memory to select either full-GPU or streaming mode.
+## Results
 
-#### **GPU Kernel/Operation Pipeline**
+Measured on one NVIDIA B200 (192 GB) with an AMD EPYC 75F3, g++ 12.2.0, and CUDA 12.9. Datasets are nested collections of human chromosome 19 and the [Pizza & Chili repetitive corpus](http://pizzachili.dcc.uchile.cl/repcorpus.html).
+
+### Chromosome 19
+
+
+| Copies | vs KKP2 | vs PFP-LZ77 | vs SE-KKP                     |
+| ------ | ------- | ----------- | ----------------------------- |
+| 1–64   | 5–7×    | 11–104×     | 32–59× (1–16), 46–51× (32–64) |
+| 128    | 1.2×    | 1.8×        | 9.4×                          |
+
+
+KKP1 and KKP3 stop at 16 copies. On 1–64 copies, GZLZ uses 1.5–2.6× the peak memory of KKP2. At 128 copies the text exceeds 2³² characters, and GZLZ switches to 64-bit indexes and the hybrid path.
+
+### Pizza & Chili
+
+
+| Baseline | Speedup  |
+| -------- | -------- |
+| KKP2     | 5.5–8.8× |
+| PFP-LZ77 | 5.2–58×  |
+| SE-KKP   | 47–70×   |
+| RLE-LZ   | 2.9–7.8× |
+
+
+These files fit in the 32-bit full-GPU path. Peak memory is 1.7–4.3× KKP2. Wall-clock time and memory plots are in the paper.
+
+---
+
+## Suffix array
+
+A suffix array stores the starting positions of every suffix in lexicographic order. GZLZ builds it with prefix doubling: each round doubles the ranked prefix, sorts the rank pairs, and assigns new ranks until every suffix is unique.
+
+```
+String: BANANA
+
+0  A
+1  ANA
+2  ANANA
+3  BANANA
+4  NA
+5  NANA
+```
 
 ```mermaid
 flowchart TD
-    INIT["Init: rank & index arrays (kernel)"] --> PREP["Prep: (rank, next rank) pairs (kernel)"]
-    PREP --> SORT["Sort: index[] by (rank, next rank) (thrust::sort_by_key)"]
-    SORT --> DIFF["Diff: Compute group boundaries (kernel)"]
-    DIFF --> SCAN["Scan: Inclusive scan (thrust::inclusive_scan)"]
-    SCAN --> UPDATE["Update: Assign new ranks (kernel)"]
-    UPDATE --> EXIT{"All groups unique?"}
+    INIT["Init rank and index arrays"] --> PREP["Build rank pairs"]
+    PREP --> SORT["Sort by rank pair"]
+    SORT --> DIFF["Mark group boundaries"]
+    DIFF --> SCAN["Inclusive scan"]
+    SCAN --> UPDATE["Assign new ranks"]
+    UPDATE --> EXIT{"All ranks unique?"}
     EXIT -- No --> PREP
-    EXIT -- Yes --> DONE["Done: Copy back Suffix Array"]
-
-    classDef op fill:#f0f6ff,stroke:#6fa1f2,stroke-width:2px;
-    classDef cond fill:#fff8e1,stroke:#ebba5b,stroke-width:2px,stroke-dasharray: 6 2;
-    classDef done fill:#e7ffe7,stroke:#45c264,stroke-width:2px;
-
-    class INIT,PREP,SORT,DIFF,SCAN,UPDATE op
-    class EXIT cond
-    class DONE done
+    EXIT -- Yes --> DONE["Suffix array"]
 ```
 
-####  **Key Optimizations**
 
-* **In-place Memory Reuse:**
-  Intermediate buffers are reused, minimizing allocations.
-* **Streaming & Adaptive Modes:**
-  If input size exceeds memory, GZLZ splits into batches and pipelines the doubling.
-* **Profiling Hooks:**
-  Each step is profiled for fine-grained analysis and bottleneck detection.
+
+Ranks are packed into 64-bit keys and sorted with `thrust::sort_by_key`. If the working set does not fit in VRAM, the suffix array is built on the host with [libsais](https://github.com/IlyaGrebnov/libsais) and the rest of the pipeline is streamed.
 
 ---
 
+## LZ77
 
-### What is LZ77 Compression?
-
-LZ77 is a foundational algorithm for lossless data compression. It replaces repeated substrings with references to their previous occurrences, representing data as a sequence of **(offset, length, next character)** triples.
-This drastically reduces storage for highly repetitive or structured data, making it crucial in genomic compression and other large-scale data applications.
-
-#### **Factorization Pipeline in GZLZ**
-
-GZLZ accelerates LZ77 factorization on the GPU by exploiting suffix arrays for rapid substring matching and utilizing parallel primitives to compute candidate matches efficiently.
-
-1. **Suffix Array Construction:** Build the suffix array for the input string (using GPU prefix doubling as above).
-2. **PSV/NSV Computation:** For each position, compute the Previous Smaller Value (PSV) and Next Smaller Value (NSV) in the suffix array, representing lexicographically closer neighbors.
-3. **Factor Extraction:** For each position, select the neighbor (PSV or NSV) yielding the longest match, and encode the (offset, length, next character) triple.
-4. **Streaming/Batching:** For datasets exceeding GPU memory, the pipeline dynamically streams suffix array segments and merges matches across batch boundaries.
-
-**Example:**
-```mermaid
-graph LR
-A["BANANA_BANANA"] -- "BANANA → (0,6)" --> B["(0,6)_BANANA"]
-B -- "BANANA → (7,6)" --> C["(0,6)_(7,6)"]
-```
-* First `"BANANA"`: Encoded as literal.
-* Second `"BANANA"`: Encoded as `(offset=0, length=6, next='_')`, etc.
-
-#### **GPU Kernel Flow for LZ77 (Batch & Streaming)**
+LZ77 replaces a repeated substring with a pointer to an earlier copy. For each position, the longest previous match is the longer of the matches against its previous smaller value (PSV) and next smaller value (NSV) in the suffix array.
 
 ```mermaid
 flowchart TD
-    BUILD_SA["Build Suffix Array<br/>(Prefix Doubling)"] --> COMPUTE_PSV["Compute PSV (kernel)"]
-    BUILD_SA --> COMPUTE_NSV["Compute NSV (kernel)"]
-
-    COMPUTE_PSV --> DECIDE{"Is memory limited?"}
-    COMPUTE_NSV --> DECIDE
-
-    DECIDE -- "Yes<br/><sub>Next&nbsp;batch</sub>" --> COMPUTE_PSV
-    DECIDE -- "Yes<br/><sub>Next&nbsp;batch</sub>" --> COMPUTE_NSV
-    DECIDE -- "No" --> KKP3["KKP3 Factorization"]
-
-    classDef step fill:#f0f6ff,stroke:#6fa1f2,stroke-width:2px;
-    classDef cond fill:#fff8e1,stroke:#ebba5b,stroke-width:2px,stroke-dasharray:6 2;
-    class BUILD_SA,COMPUTE_PSV,COMPUTE_NSV,KKP3 step
-    class DECIDE cond
-
+    SA["Suffix array"] --> PSV["PSV and NSV in suffix-array order"]
+    PSV --> TEXT["Permute into text order"]
+    TEXT --> FACTOR["Emit the longer match, or a literal"]
 ```
 
-#### **Why PSV & NSV Matter**
 
-Let \$SA\$ be the suffix array for \$T\$, and \$i\$ an index in \$SA\$:
 
-* **PSV(i):** The closest suffix before \$i\$ in SA, such that \$SA\[j] < SA\[i]\$ and \$j < i\$.
-* **NSV(i):** The closest suffix after \$i\$ in SA, such that \$SA\[j] < SA\[i]\$ and \$j > i\$.
+Each GPU block scans its suffix-array tile in shared memory. Cross-tile answers use the minimum value of each tile, so tiles that cannot hold a smaller value are skipped. `thrust::scatter` writes PSV and NSV in text order, which avoids storing the inverse suffix array.
 
-By comparing the match lengths for \$PSV(i)\$ and \$NSV(i)\$, we efficiently find the longest leftward match.
-
-$$
-\mathrm{LZ77\_factor}(i) = \max \{ \mathrm{lcp}(T[i..],\ T[\mathrm{PSV}(i)..]),\ \mathrm{lcp}(T[i..],\ T[\mathrm{NSV}(i)..]) \}
-$$
-
-#### **Key GZLZ LZ77 Optimizations**
-
-* **Blockwise Kernels:** Compute PSV/NSV in parallel blocks with batch merging for ultra-large files.
-* **Text Order Mapping:** GPU text-order transforms for faster extraction and output.
-* **Memory Adaptivity:** Automatic switching to streaming when memory is tight, with seamless batch merging logic.
-* **Profiling/Instrumentation:** Every LZ77 phase profiled for speed and bottleneck analysis.
+The CPU then scans left to right. At each phrase it keeps the longer of the two candidates and writes either a reference `(source, length)` or a literal `(character, 0)`.
 
 ---
 
-## Visualizations
+## Build
 
-### GPU Memory Usage Comparison
+CMake 3.18 or newer, C++17, and CUDA. The default architectures are 80, 86, and 90. Add `100` to `CMAKE_CUDA_ARCHITECTURES` to build for the B200.
 
-```mermaid
-pie title GPU Memory Usage (32× Dataset)
-"GZLZ GPU" : 29
-"libCUBWT GPU" : 55
+CMake fetches libdivsufsort, libsais, SDSL-lite, CLI11, malloc_count, spdlog, and Catch2. OpenMP is used for the host suffix array when it is available.
+
+```bash
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j$(nproc)
 ```
 
----
-
-## Bioinformatics & Compression Applications
-
-GZLZ directly targets critical needs in bioinformatics, where genomic data volumes explode exponentially. Optimized GPU implementations allow researchers and practitioners to handle larger datasets efficiently, accelerating genome assembly, sequence alignment, and high-throughput data compression workflows.
+That produces `lz77`, `sa_profiler`, and `tests`.
 
 ---
+
+## Usage
+
+```bash
+./lz77 <input_file> <output_prefix> [--force-size-t] [--uint40]
+./sa_profiler <input_file>
+./tests
+python3 ../src/Tests/verify_lz77.py <original_file> <output_prefix>_lz77.bin
+```
+
+`lz77` reads the file as raw bytes, appends a trailing NUL, and writes `<output_prefix>_lz77.bin`. `--force-size-t` selects 64-bit indexes. `--uint40` packs host arrays on that path.
+
+`sa_profiler` times prefix doubling against libcubwt on one file. `verify_lz77.py` expands the factor file and compares it with the original.
+
+---
+
+## Citation
+
+```bibtex
+@article{varki2026gzlz,
+  title   = {GZLZ: GPU-Accelerated LZ77 Compression},
+  author  = {Varki, Rahul and Serajian, Mohammadali and Spencer, Cannon and Hong, Aaron and Green, Oded and Boucher, Christina},
+  journal = {SSRN Electronic Journal},
+  year    = {2026},
+  doi     = {10.2139/ssrn.7328580},
+  url     = {https://doi.org/10.2139/ssrn.7328580}
+}
+```
+
