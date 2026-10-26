@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# filepath: [verify_lz77.py](http://_vscodecontentref_/0)
 
 """
 LZ77 Compression Verification Tool
@@ -234,8 +233,8 @@ def verify_compression(original_file, lz77_file):
 def main():
     """Main entry point"""
     if len(sys.argv) != 3:
-        print("Usage: python3 [verify_lz77.py](http://_vscodecontentref_/1) <original_file> <lz77_file>")
-        print("Example: python3 [verify_lz77.py](http://_vscodecontentref_/2) input.txt output_lz77.bin")
+        print("Usage: python3 verify_lz77.py <original_file> <lz77_file>")
+        print("Example: python3 verify_lz77.py input.txt output_lz77.bin")
         sys.exit(1)
     
     original_file = sys.argv[1]
